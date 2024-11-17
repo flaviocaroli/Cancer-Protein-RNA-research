@@ -1,7 +1,7 @@
 # Imports
 
 import pandas as pd
-import notebooks.standardised_pipeline_utils as standardised_pipeline_utils
+import src.standardised_pipeline_utils as standardised_pipeline_utils
 
 # Processing and matching
 
