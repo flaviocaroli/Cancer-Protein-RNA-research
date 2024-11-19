@@ -8,10 +8,24 @@ import itertools
 
 ## adaptive loop for the model
 
-def full_adaptive_pipeline(model, param_grid, X, y, anova_features, n_splits=5, size='full'):
+def full_adaptive_pipeline(model,
+                           param_grid,
+                           X,
+                           y,
+                           anova_features,
+                           n_splits=5,
+                           n_proteins=None,
+                           n_samples=None):
+    
     # Get samples and proteins
-    sample_list = y.index[:3]
-    protein_list = y.columns[:2]
+    sample_list = y.index
+    protein_list = y.columns
+
+    if n_samples != None:
+        sample_list = sample_list[:n_samples]
+    if n_proteins != None:
+        protein_list = protein_list[:n_proteins]
+        
 
     # Initialize the results table
     df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 'params'])
@@ -20,10 +34,6 @@ def full_adaptive_pipeline(model, param_grid, X, y, anova_features, n_splits=5, 
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     del keys, values
-
-    # If size is 'trial', use a subset of proteins
-    if size == 'trial':
-        protein_list = protein_list[:10]
 
     # Nested loops for proteins and samples
     for protein in protein_list:
