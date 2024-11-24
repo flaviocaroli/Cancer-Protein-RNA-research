@@ -3,7 +3,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import notebooks.standardised_pipeline_utils as standardised_pipeline_utils
+import src.standardised_pipeline_utils as standardised_pipeline_utils
 
 def second_processing(transcriptomics, proteomics, transcriptomics_matched):
     # removed row with nan's. no more nan's in RNA data.
