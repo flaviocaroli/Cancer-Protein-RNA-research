@@ -25,7 +25,6 @@ def full_adaptive_pipeline(model,
         sample_list = sample_list[:n_samples]
     if n_proteins != None:
         protein_list = protein_list[:n_proteins]
-        
 
     # Initialize the results table
     df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 'params'])
@@ -100,105 +99,4 @@ def full_adaptive_pipeline(model,
                 best_params
             ]
 
-    return df
-
-# OLD ONE - Samples outside  - don't use
-
-def boosting_pipeline(model, param_grid, X, y, anova_features):
-
-    # get samples and proteins
-    sample_list = y.index
-    protein_list = y.columns
-
-    # initialize the results table
-    df = pd.DataFrame(columns=['protein',
-                               'LOO sample',
-                               'true',
-                               'predicted',
-                               'params'])
-
-    for sample in sample_list:
-        print(sample)
-
-        # leave one out split
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=1)
-
-        # get folds
-        kf = KFold(n_splits=5, shuffle=True)
-        folds = list(kf.split(X_train.index))
-
-        # get parameter combinations
-        keys, values = zip(*param_grid.items())
-        param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-
-        for protein in protein_list:
-            
-            # remove all proteins but one from y
-            yp_train = y_train[protein]
-            yp_test = y_test[protein]
-
-            # select the best features by F-value
-            selector = SelectKBest(score_func=f_regression, k=anova_features)
-            selector.fit_transform(X_train, yp_train)
-            
-            # remove all other features from X
-            selected_indices = np.where(selector.get_support())[0]
-            selected_features = X_train.columns[selected_indices]
-            Xp_train = X_train[selected_features]
-            Xp_test = X_test[selected_features]
-
-            # initialize best_params variable
-            best_params = param_combinations[0]
-            best_params_mse = np.inf
-
-            for params in param_combinations:
-
-                avg_mse = 0
-
-                for fold in folds:
-
-                    # fit and validation indices
-                    fit_idx, val_idx = fold
-
-                    # construct sets
-                    X_fit = Xp_train.iloc[fit_idx]
-                    y_fit = yp_train.iloc[fit_idx]
-                    X_val = Xp_train.iloc[val_idx]
-                    y_val = yp_train.iloc[val_idx]
-
-                    # build model for this fold and get predictions
-                    estimator = model
-                    estimator.set_params(**params)
-
-                    estimator.fit(X_fit, y_fit)
-                    y_pred = estimator.predict(X_val)
-
-                    # get mse on this fold
-                    mse = mean_squared_error(y_val, y_pred)
-                    avg_mse += mse
-                
-                # get mse for parameter configuration
-                avg_mse /= len(folds)
-
-                # update best config if these parameters have the lowest mean mse
-                if avg_mse < best_params_mse:
-                    best_params_mse = avg_mse
-                    best_params = params
-                
-            # train the final model with the best parameters
-            estimator = model
-            estimator.set_params(**best_params)
-
-            estimator.fit(Xp_train, yp_train)
-            y_pred = model.predict(Xp_test)
-
-            # add entry to the results table
-            df.loc[len(df)] = [
-                protein,
-                sample,
-                yp_test.values[0],
-                y_pred[0],
-                best_params
-            ]
-        
     return df
