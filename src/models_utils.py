@@ -40,8 +40,12 @@ def full_pipeline(model,
     Returns:
     - df: pandas DataFrame
     """
-    sample_list = y.index
-    protein_list = y.columns
+    # Transpose X and y to use labels instead of indices for better performance
+    X = X.T
+    y = y.T
+
+    sample_list = y.columns
+    protein_list = y.index
 
     if n_samples is not None:
         sample_list = sample_list[:n_samples]
@@ -54,37 +58,40 @@ def full_pipeline(model,
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
     for protein in protein_list:
-        yp = y[protein]
+        yp = y.loc[protein]
 
         for sample in sample_list:
             # Leave the sample out
-            X_train = X.drop(sample)
-            X_test = X.loc[[sample]]
-            y_train = yp.drop(sample)
-            y_test = yp.loc[[sample]]
+            X_train = X.drop(columns=[sample])
+            X_test = X[[sample]]
+            y_train = yp.drop(index=[sample])
+            y_test = yp[[sample]]
 
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             avg_mse = np.zeros(len(param_combinations) * len(p_values))
 
-            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train)):
-                X_fit = X_train.iloc[fit_idx]
-                y_fit = y_train.iloc[fit_idx]
-                X_val = X_train.iloc[val_idx]
-                y_val = y_train.iloc[val_idx]
+            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train.columns)):
+                fit_columns = X_train.columns[fit_idx]
+                val_columns = X_train.columns[val_idx]
+
+                X_fit = X_train[fit_columns]
+                y_fit = y_train[fit_columns]
+                X_val = X_train[val_columns]
+                y_val = y_train[val_columns]
 
                 for k, params in enumerate(param_combinations):
                     for p_idx, p_value in enumerate(p_values):
                         if feature_selector == 'anova':
                             selector = SelectKBest(score_func=f_regression, k='all')
-                            selector.fit(X_fit, y_fit)
+                            selector.fit(X_fit.T, y_fit)
                             mask = selector.pvalues_ <= p_value
                         elif feature_selector == 'spearman':
-                            scores = np.array([spearmanr(X_fit.iloc[:, i], y_fit)[0] for i in range(X_fit.shape[1])])
-                            pvalues = np.array([spearmanr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
+                            scores = np.array([spearmanr(X_fit.loc[i], y_fit)[0] for i in X_fit.index])
+                            pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
                             mask = pvalues <= p_value
                         elif feature_selector == 'pearson':
-                            scores = np.array([pearsonr(X_fit.iloc[:, i], y_fit)[0] for i in range(X_fit.shape[1])])
-                            pvalues = np.array([pearsonr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
+                            scores = np.array([pearsonr(X_fit.loc[i], y_fit)[0] for i in X_fit.index])
+                            pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
                             mask = pvalues <= p_value
                         else:
                             raise ValueError("feature_selector must be 'anova', 'spearman', or 'pearson'")
@@ -93,15 +100,15 @@ def full_pipeline(model,
                         if not np.any(mask):
                             continue
 
-                        X_fit_selected = X_fit.loc[:, mask]
-                        X_val_selected = X_val.loc[:, mask]
+                        X_fit_selected = X_fit.loc[mask]
+                        X_val_selected = X_val.loc[mask]
 
                         estimator = model.__class__()  # Create a new instance of the model
                         estimator.set_params(**params)
 
                         try:
-                            estimator.fit(X_fit_selected, y_fit)
-                            y_pred = estimator.predict(X_val_selected)
+                            estimator.fit(X_fit_selected.T, y_fit)
+                            y_pred = estimator.predict(X_val_selected.T)
                             mse = mean_squared_error(y_val, y_pred)
                             avg_mse[p_idx * len(param_combinations) + k] += mse / n_splits
                         except Exception:
@@ -118,30 +125,30 @@ def full_pipeline(model,
             # Perform feature selection on full X_train
             if feature_selector == 'anova':
                 selector = SelectKBest(score_func=f_regression, k='all')
-                selector.fit(X_train, y_train)
+                selector.fit(X_train.T, y_train)
                 mask = selector.pvalues_ <= best_p_value
             elif feature_selector == 'spearman':
-                scores = np.array([spearmanr(X_train.iloc[:, i], y_train)[0] for i in range(X_train.shape[1])])
-                pvalues = np.array([spearmanr(X_train.iloc[:, i], y_train)[1] for i in range(X_train.shape[1])])
+                scores = np.array([spearmanr(X_train.loc[i], y_train)[0] for i in X_train.index])
+                pvalues = np.array([spearmanr(X_train.loc[i], y_train)[1] for i in X_train.index])
                 mask = pvalues <= best_p_value
             elif feature_selector == 'pearson':
-                scores = np.array([pearsonr(X_train.iloc[:, i], y_train)[0] for i in range(X_train.shape[1])])
-                pvalues = np.array([pearsonr(X_train.iloc[:, i], y_train)[1] for i in range(X_train.shape[1])])
+                scores = np.array([pearsonr(X_train.loc[i], y_train)[0] for i in X_train.index])
+                pvalues = np.array([pearsonr(X_train.loc[i], y_train)[1] for i in X_train.index])
                 mask = pvalues <= best_p_value
 
             # If no features are selected, skip to next iteration
             if not np.any(mask):
                 continue
 
-            X_train_selected = X_train.loc[:, mask]
-            X_test_selected = X_test.loc[:, mask]
+            X_train_selected = X_train.loc[mask]
+            X_test_selected = X_test.loc[mask]
 
             estimator = model.__class__()  # Create a new instance of the model
             estimator.set_params(**best_params)
 
             try:
-                estimator.fit(X_train_selected, y_train)
-                y_pred = estimator.predict(X_test_selected)
+                estimator.fit(X_train_selected.T, y_train)
+                y_pred = estimator.predict(X_test_selected.T)
             except Exception:
                 y_pred = np.nan  # If fitting fails, set prediction to NaN
 
@@ -184,8 +191,12 @@ def full_pipeline2(model,
     Returns:
     - df: pandas DataFrame
     """
-    sample_list = y.index
-    protein_list = y.columns
+    # Transpose X and y to use labels instead of indices for better performance
+    X = X.T
+    y = y.T
+
+    sample_list = y.columns
+    protein_list = y.index
 
     if n_samples is not None:
         sample_list = sample_list[:n_samples]
@@ -199,33 +210,36 @@ def full_pipeline2(model,
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
     for protein in protein_list:
-        yp = y[protein]
+        yp = y.loc[protein]
 
         for sample in sample_list:
             # Leave the sample out
-            X_train = X.drop(sample)
-            X_test = X.loc[[sample]]
-            y_train = yp.drop(sample)
-            y_test = yp.loc[[sample]]
+            X_train = X.drop(columns=[sample])
+            X_test = X[[sample]]
+            y_train = yp.drop(index=[sample])
+            y_test = yp[[sample]]
 
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             avg_mse = np.zeros(len(param_combinations))
 
-            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train)):
-                X_fit = X_train.iloc[fit_idx]
-                y_fit = y_train.iloc[fit_idx]
-                X_val = X_train.iloc[val_idx]
-                y_val = y_train.iloc[val_idx]
+            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train.columns)):
+                fit_columns = X_train.columns[fit_idx]
+                val_columns = X_train.columns[val_idx]
+
+                X_fit = X_train[fit_columns]
+                y_fit = y_train[fit_columns]
+                X_val = X_train[val_columns]
+                y_val = y_train[val_columns]
 
                 # Compute p-values once per fold
                 if feature_selector == 'anova':
                     selector = SelectKBest(score_func=f_regression, k='all')
-                    selector.fit(X_fit, y_fit)
+                    selector.fit(X_fit.T, y_fit)
                     pvalues = selector.pvalues_
                 elif feature_selector == 'spearman':
-                    pvalues = np.array([spearmanr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
+                    pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
                 elif feature_selector == 'pearson':
-                    pvalues = np.array([pearsonr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
+                    pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
                 else:
                     raise ValueError("feature_selector must be 'anova', 'spearman', or 'pearson'")
 
@@ -242,15 +256,15 @@ def full_pipeline2(model,
                         avg_mse[k] += 1e6 / n_splits  # Penalize for no features selected
                         continue
 
-                    X_fit_selected = X_fit.loc[:, mask]
-                    X_val_selected = X_val.loc[:, mask]
+                    X_fit_selected = X_fit.loc[mask]
+                    X_val_selected = X_val.loc[mask]
 
                     estimator = model.__class__(max_iter=10)  # Increase max_iter if needed
                     estimator.set_params(**params_copy)
 
                     try:
-                        estimator.fit(X_fit_selected, y_fit)
-                        y_pred = estimator.predict(X_val_selected)
+                        estimator.fit(X_fit_selected.T, y_fit)
+                        y_pred = estimator.predict(X_val_selected.T)
                         mse = mean_squared_error(y_val, y_pred)
                         avg_mse[k] += mse / n_splits
                     except Exception as e:
@@ -267,30 +281,30 @@ def full_pipeline2(model,
             # Perform feature selection on full X_train using best_p_value
             if feature_selector == 'anova':
                 selector = SelectKBest(score_func=f_regression, k='all')
-                selector.fit(X_train, y_train)
+                selector.fit(X_train.T, y_train)
                 pvalues = selector.pvalues_
                 mask = pvalues <= best_p_value
             elif feature_selector == 'spearman':
-                pvalues = np.array([spearmanr(X_train.iloc[:, i], y_train)[1] for i in range(X_train.shape[1])])
+                pvalues = np.array([spearmanr(X_train.loc[i], y_train)[1] for i in X_train.index])
                 mask = pvalues <= best_p_value
             elif feature_selector == 'pearson':
-                pvalues = np.array([pearsonr(X_train.iloc[:, i], y_train)[1] for i in range(X_train.shape[1])])
+                pvalues = np.array([pearsonr(X_train.loc[i], y_train)[1] for i in X_train.index])
                 mask = pvalues <= best_p_value
 
             # If no features are selected, skip to next iteration
             if not np.any(mask):
                 continue
 
-            X_train_selected = X_train.loc[:, mask]
-            X_test_selected = X_test.loc[:, mask]
+            X_train_selected = X_train.loc[mask]
+            X_test_selected = X_test.loc[mask]
 
             
             estimator = model.__class__(max_iter=100)  
             estimator.set_params(**best_params)
 
             try:
-                estimator.fit(X_train_selected, y_train)
-                y_pred = estimator.predict(X_test_selected)
+                estimator.fit(X_train_selected.T, y_train)
+                y_pred = estimator.predict(X_test_selected.T)
             except Exception as e:
                 y_pred = np.nan  # If fitting fails, set prediction to NaN
                 # Optionally, print or log the exception e
