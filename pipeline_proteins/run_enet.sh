@@ -19,4 +19,4 @@ module load miniconda3  # Adjust Python version if necessary
 # pip install -r requirements.txt
 
 # Run the Python script with the subset number
-python ~/pipeline/src/pipeline.py --subset ${SLURM_ARRAY_TASK_ID}
+python ~/pipeline_proteins/src/pipeline_enet.py --subset ${SLURM_ARRAY_TASK_ID}
