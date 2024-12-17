@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CHUNK_SIZE=1001
+CHUNK_SIZE=500
 TOTAL_PROTEINS=5113
 DATA_DIR=~/pipeline_proteins/data
 SRC_DIR=~/pipeline_proteins/src
@@ -14,8 +14,6 @@ for START in $(seq 1 $CHUNK_SIZE $TOTAL_PROTEINS); do
     sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=pipeline_job_%a
-#SBATCH --output=slurm_output_%a_%j.txt
-#SBATCH --error=slurm_error_%a_%j.txt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
