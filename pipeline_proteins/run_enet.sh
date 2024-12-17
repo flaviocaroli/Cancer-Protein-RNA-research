@@ -1,22 +1,36 @@
 #!/bin/bash
-#SBATCH --job-name=pipeline_job_%a       # Job name (%a for array index)
-#SBATCH --output=slurm_output_%a_%j.txt  # Output file (%j = Job ID)
-#SBATCH --error=slurm_error_%a_%j.txt    # Error file
-#SBATCH --nodes=1                        # Number of nodes
-#SBATCH --ntasks=1                       # Number of tasks (processes)
-#SBATCH --cpus-per-task=4                # Number of CPU cores per task
-#SBATCH --time=04:00:00                  # Max runtime
-#SBATCH --mem=32G                        # Memory required
-#SBATCH --array=1-10                     # Array of jobs for subsets 1 to 10
-#SBATCH --mail-type=END                  # Email on completion
-#SBATCH --mail-user=flavio.caroli@unibocconi.it  # Replace with your email
 
-# Load necessary modules
-module load miniconda3  # Adjust Python version if necessary
+CHUNK_SIZE=1001
+TOTAL_PROTEINS=5113
+DATA_DIR=~/pipeline_proteins/data
+SRC_DIR=~/pipeline_proteins/src
 
-# conda create --name test_env python=3.8
-# conda activate test_env
-# pip install -r requirements.txt
+for START in $(seq 1 $CHUNK_SIZE $TOTAL_PROTEINS); do
+    END=$((START + CHUNK_SIZE - 1))
+    if [ $END -gt $TOTAL_PROTEINS ]; then
+        END=$TOTAL_PROTEINS
+    fi
 
-# Run the Python script with the subset number
-python ~/pipeline_proteins/src/pipeline_enet.py --subset ${SLURM_ARRAY_TASK_ID}
+    sbatch <<EOF
+#!/bin/bash
+#SBATCH --job-name=pipeline_job_%a
+#SBATCH --output=slurm_output_%a_%j.txt
+#SBATCH --error=slurm_error_%a_%j.txt
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=04:00:00
+#SBATCH --mem=32G
+#SBATCH --array=${START}-${END}
+
+module load miniconda3
+conda activate test_env
+
+cd $SRC_DIR
+
+PROTEIN_NAME=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" $DATA_DIR/protein_list.txt)
+
+python pipeline_enet.py --protein "\$PROTEIN_NAME"
+EOF
+
+done
