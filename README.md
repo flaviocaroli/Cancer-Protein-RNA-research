@@ -43,14 +43,14 @@ cp notebooks/data/proteomics_matched.joblib pipeline_proteins/data/
 ```
 
 ### Step 5: Split the Proteins into Subsets
-Run the `split_prot.py` script to generate 10 subsets of proteins for parallel processing:
+Run the `generate_protein_list.py` script to generate a list of all the proteins to analyze:
 ```bash
 cd pipeline_proteins/src
-python split_prot.py
+python generate_protein_list.py
 ```
 
 **Output:**  
-This script creates 10 text files (`protein_list_1.txt`, `protein_list_2.txt`, ..., `protein_list_10.txt`) in the `pipeline_proteins/data` folder.
+This script creates a text file in the `pipeline_proteins/data` folder.
 
 ### Step 6: Upload Files to Your HPC
 Transfer the entire `pipeline_proteins` folder to your HPC:
