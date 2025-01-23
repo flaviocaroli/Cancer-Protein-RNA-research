@@ -3,8 +3,8 @@ import sys
 import argparse
 import pandas as pd
 import numpy as np
-from joblib import load
 from sklearn.linear_model import ElasticNet
+from joblib import load
 from single_pipeline import single_protein_pipeline
 
 # Parse command-line arguments

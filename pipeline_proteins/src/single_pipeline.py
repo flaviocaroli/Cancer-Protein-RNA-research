@@ -32,9 +32,9 @@ def single_protein_pipeline(model,
     - n_samples: int, optional, to limit number of samples (for debugging)
 
     Returns:
-    - df: DataFrame with columns ['protein', 'LOO sample', 'true', 'predicted', 'params']
+    - df: DataFrame with columns:
+        ['protein', 'LOO sample', 'true', 'predicted', 'params', 'selected_features_union']
     """
-
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
 
@@ -52,6 +52,9 @@ def single_protein_pipeline(model,
     # Generate all parameter combinations
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    # A set to store the union of all selected features across LOO
+    union_of_features = set()
 
     # Loop over each sample as LOO
     for sample in sample_list:
@@ -105,6 +108,7 @@ def single_protein_pipeline(model,
                 X_fit_selected = X_fit.loc[mask]
                 X_val_selected = X_val.loc[mask]
 
+                # Instantiate a fresh copy of the model for each iteration
                 estimator = model.__class__(max_iter=100)
                 estimator.set_params(**params_copy)
 
@@ -128,12 +132,15 @@ def single_protein_pipeline(model,
             selector.fit(X_train_t.T, y_train)
             pvalues = selector.pvalues_
             mask = pvalues <= best_p_value
+            selected_feature_names = X_train_t.index[mask]
         elif feature_selector == 'spearman':
             pvalues = np.array([spearmanr(X_train_t.loc[i], y_train)[1] for i in X_train_t.index])
             mask = pvalues <= best_p_value
+            selected_feature_names = X_train_t.index[mask]
         elif feature_selector == 'pearson':
             pvalues = np.array([pearsonr(X_train_t.loc[i], y_train)[1] for i in X_train_t.index])
             mask = pvalues <= best_p_value
+            selected_feature_names = X_train_t.index[mask]
 
         if not np.any(mask):
             # No features selected for final training
@@ -142,7 +149,10 @@ def single_protein_pipeline(model,
             X_train_selected = X_train_t.loc[mask]
             X_test_t = X_test.T.loc[mask]
 
-            estimator = model.__class__(max_iter=100)
+            # Update the union with features used in this LOO iteration
+            union_of_features.update(selected_feature_names)
+
+            estimator = model.__class__(max_iter=10)
             estimator.set_params(**best_params)
 
             try:
@@ -162,5 +172,10 @@ def single_protein_pipeline(model,
             'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
             'params': best_params
         }
+
+    # After completing all LOO samples, add the union of selected features as a column
+    # (Can be store it as a list or string; here we store as a sorted list for clarity)
+    union_list = sorted(list(union_of_features))
+    df['selected_features_union'] = [union_list] * len(df)
 
     return df
