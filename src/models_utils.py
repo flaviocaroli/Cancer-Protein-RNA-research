@@ -1,194 +1,324 @@
-
-from sklearn.model_selection import KFold, train_test_split
-from sklearn.feature_selection import SelectKBest, f_regression
-from sklearn.metrics import mean_squared_error
 import pandas as pd
 import numpy as np
 import itertools
+import inspect
+import warnings
+from sklearn.model_selection import KFold
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.metrics import mean_squared_error
+from scipy.stats import spearmanr, pearsonr
+from sklearn.exceptions import ConvergenceWarning
 
-## adaptive loop for the model
+def full_pipeline(model,
+                           param_grid,
+                           X,
+                           y,
+                           feature_selector='anova',
+                           p_values=[0.1, 0.05, 0.01],
+                           n_splits=5,
+                           n_proteins=None,
+                           n_samples=None):
+    """
+    Perform adaptive pipeline for regression model tuning with different feature selection methods.
 
-def full_adaptive_pipeline(model, param_grid, X, y, anova_features, n_splits=5, size='full'):
-    # Get samples and proteins
-    sample_list = y.index[:3]
-    protein_list = y.columns[:2]
+    Parameters:
+    - model: sklearn-like estimator
+    - param_grid: dict
+    - X: pandas DataFrame
+    - y: pandas DataFrame
+    - feature_selector: str, optional (default='anova')
+        The feature selection method to use. Options are 'anova', 'spearman', or 'pearson'.
+    - p_values: list of float, optional (default=[0.1, 0.05, 0.01])
+        List of p-values to use for feature selection during hyperparameter tuning.
+    - n_splits: int, optional (default=5)
+        Number of splits for K-fold cross-validation.
+    - n_proteins: int, optional (default=None)
+        Number of proteins to use for training. If None, all proteins are used.
+    - n_samples: int, optional (default=None)
+        Number of samples to use for training. If None, all samples are used.
 
-    # Initialize the results table
+    Returns:
+    - df: pandas DataFrame
+    """
+    # Transpose X and y to use labels instead of indices for better performance
+    X = X.T
+    y = y.T
+
+    sample_list = y.columns
+    protein_list = y.index
+
+    if n_samples is not None:
+        sample_list = sample_list[:n_samples]
+    if n_proteins is not None:
+        protein_list = protein_list[:n_proteins]
+
     df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 'params'])
 
-    # Generate all parameter combinations
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    del keys, values
 
-    # If size is 'trial', use a subset of proteins
-    if size == 'trial':
-        protein_list = protein_list[:10]
-
-    # Nested loops for proteins and samples
     for protein in protein_list:
-        # Target variable for the current protein
-        yp = y[protein]
+        yp = y.loc[protein]
 
         for sample in sample_list:
-            # Leave-One-Out (LOO) split
-            X_train, X_test, y_train, y_test = train_test_split(X, yp, test_size=1)
+            # Leave the sample out
+            X_train = X.drop(columns=[sample])
+            X_test = X[[sample]]
+            y_train = yp.drop(index=[sample])
+            y_test = yp[[sample]]
 
-            # K-Fold cross-validation
-            kf = KFold(n_splits=n_splits, shuffle=True)
-            folds = list(kf.split(X_train.index))
+            kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            avg_mse = np.zeros(len(param_combinations) * len(p_values))
 
-            # Initialize average MSE list
-            avg_mse = np.zeros(len(param_combinations))
+            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train.columns)):
+                fit_columns = X_train.columns[fit_idx]
+                val_columns = X_train.columns[val_idx]
 
-            for fit_idx, val_idx in folds:
-                # Construct training and validation sets
-                X_fit = X_train.iloc[fit_idx]
-                y_fit = y_train.iloc[fit_idx]
-                X_val = X_train.iloc[val_idx]
-                y_val = y_train.iloc[val_idx]
-
-                # Feature selection using ANOVA F-test
-                selector = SelectKBest(score_func=f_regression, k=min(anova_features, X_fit.shape[1]))
-                X_fit = selector.fit_transform(X_fit, y_fit)
-                X_val = selector.transform(X_val)
+                X_fit = X_train[fit_columns]
+                y_fit = y_train[fit_columns]
+                X_val = X_train[val_columns]
+                y_val = y_train[val_columns]
 
                 for k, params in enumerate(param_combinations):
-                    # Set model parameters
-                    estimator = model
-                    estimator.set_params(**params)
+                    for p_idx, p_value in enumerate(p_values):
+                        if feature_selector == 'anova':
+                            selector = SelectKBest(score_func=f_regression, k='all')
+                            selector.fit(X_fit.T, y_fit)
+                            mask = selector.pvalues_ <= p_value
+                        elif feature_selector == 'spearman':
+                            scores = np.array([spearmanr(X_fit.loc[i], y_fit)[0] for i in X_fit.index])
+                            pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
+                            mask = pvalues <= p_value
+                        elif feature_selector == 'pearson':
+                            scores = np.array([pearsonr(X_fit.loc[i], y_fit)[0] for i in X_fit.index])
+                            pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
+                            mask = pvalues <= p_value
+                        else:
+                            raise ValueError("feature_selector must be 'anova', 'spearman', or 'pearson'")
 
-                    # Fit the model and predict
-                    estimator.fit(X_fit, y_fit)
-                    y_pred = estimator.predict(X_val)
+                        # If no features are selected, continue to next iteration
+                        if not np.any(mask):
+                            continue
 
-                    # Calculate MSE and update the average
-                    mse = mean_squared_error(y_val, y_pred)
-                    avg_mse[k] += mse / n_splits
+                        X_fit_selected = X_fit.loc[mask]
+                        X_val_selected = X_val.loc[mask]
 
-            # Find the best parameter combination (minimum MSE)
+                        estimator = model.__class__()  # Create a new instance of the model
+                        estimator.set_params(**params)
+
+                        try:
+                            estimator.fit(X_fit_selected.T, y_fit)
+                            y_pred = estimator.predict(X_val_selected.T)
+                            mse = mean_squared_error(y_val, y_pred)
+                            avg_mse[p_idx * len(param_combinations) + k] += mse / n_splits
+                        except Exception:
+                            # In case of any error during fitting/predicting, set mse to a large number
+                            avg_mse[p_idx * len(param_combinations) + k] += 1e6 / n_splits
+
+            # Select the best parameters and p_value
             best_index = np.argmin(avg_mse)
-            best_params = param_combinations[best_index]
+            best_p_value_idx = best_index // len(param_combinations)
+            best_param_idx = best_index % len(param_combinations)
+            best_params = param_combinations[best_param_idx]
+            best_p_value = p_values[best_p_value_idx]
 
-            # Train the final model using the best parameters
-            estimator = model
+            # Perform feature selection on full X_train
+            if feature_selector == 'anova':
+                selector = SelectKBest(score_func=f_regression, k='all')
+                selector.fit(X_train.T, y_train)
+                mask = selector.pvalues_ <= best_p_value
+            elif feature_selector == 'spearman':
+                scores = np.array([spearmanr(X_train.loc[i], y_train)[0] for i in X_train.index])
+                pvalues = np.array([spearmanr(X_train.loc[i], y_train)[1] for i in X_train.index])
+                mask = pvalues <= best_p_value
+            elif feature_selector == 'pearson':
+                scores = np.array([pearsonr(X_train.loc[i], y_train)[0] for i in X_train.index])
+                pvalues = np.array([pearsonr(X_train.loc[i], y_train)[1] for i in X_train.index])
+                mask = pvalues <= best_p_value
+
+            # If no features are selected, skip to next iteration
+            if not np.any(mask):
+                continue
+
+            X_train_selected = X_train.loc[mask]
+            X_test_selected = X_test.loc[mask]
+
+            estimator = model.__class__()  # Create a new instance of the model
             estimator.set_params(**best_params)
 
-            # Feature selection for the final model
-            X_train_selected = selector.fit_transform(X_train, y_train)
-            X_test_selected = selector.transform(X_test)
+            try:
+                estimator.fit(X_train_selected.T, y_train)
+                y_pred = estimator.predict(X_test_selected.T)
+            except Exception:
+                y_pred = np.nan  # If fitting fails, set prediction to NaN
 
-            estimator.fit(X_train_selected, y_train)
-            y_pred = estimator.predict(X_test_selected)
-
-            # Add the result to the DataFrame
-            df.loc[len(df)] = [
-                protein,
-                sample,
-                y_test.values[0],
-                y_pred[0],
-                best_params
-            ]
+            df.loc[len(df)] = {
+                'protein': protein,
+                'LOO sample': sample,
+                'true': y_test.values[0],
+                'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
+                'params': {**best_params, 'p_value': best_p_value, 'feature_selector': feature_selector}
+            }
 
     return df
 
-# OLD ONE - Samples outside  - don't use
 
-def boosting_pipeline(model, param_grid, X, y, anova_features):
+def full_pipeline2(model,
+                            param_grid,
+                            X,
+                            y,
+                            feature_selector='anova',
+                            n_splits=5,
+                            n_proteins=None,
+                            n_samples=None):
+    """
+    Perform adaptive pipeline for regression model tuning with different feature selection methods.
 
-    # get samples and proteins
-    sample_list = y.index
-    protein_list = y.columns
+    Parameters:
+    - model: sklearn-like estimator
+    - param_grid: dict (should include 'p_value' as one of the hyperparameters)
+    - X: pandas DataFrame
+    - y: pandas DataFrame
+    - feature_selector: str, optional (default='anova')
+        The feature selection method to use. Options are 'anova', 'spearman', or 'pearson'.
+    - n_splits: int, optional (default=5)
+        Number of splits for K-fold cross-validation.
+    - n_proteins: int, optional (default=None)
+        Number of proteins to use for training. If None, all proteins are used.
+    - n_samples: int, optional (default=None)
+        Number of samples to use for training. If None, all samples are used.
 
-    # initialize the results table
-    df = pd.DataFrame(columns=['protein',
-                               'LOO sample',
-                               'true',
-                               'predicted',
-                               'params'])
+    Returns:
+    - df: pandas DataFrame
+    """
+    # Transpose X and y to use labels instead of indices for better performance
+    X = X.T
+    y = y.T
 
-    for sample in sample_list:
-        print(sample)
+    sample_list = y.columns
+    protein_list = y.index
 
-        # leave one out split
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=1)
+    if n_samples is not None:
+        sample_list = sample_list[:n_samples]
+    if n_proteins is not None:
+        protein_list = protein_list[:n_proteins]
 
-        # get folds
-        kf = KFold(n_splits=5, shuffle=True)
-        folds = list(kf.split(X_train.index))
+    df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 'params'])
 
-        # get parameter combinations
-        keys, values = zip(*param_grid.items())
-        param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    # Generate all combinations of hyperparameters, including p_value
+    keys, values = zip(*param_grid.items())
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-        for protein in protein_list:
+    for protein in protein_list:
+        yp = y.loc[protein]
+
+        for sample in sample_list:
+            # Leave the sample out
+            X_train = X.drop(columns=[sample])
+            X_test = X[[sample]]
+            y_train = yp.drop(index=[sample])
+            y_test = yp[[sample]]
+
+            kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+            avg_mse = np.zeros(len(param_combinations))
+
+            for fold_idx, (fit_idx, val_idx) in enumerate(kf.split(X_train.columns)):
+                fit_columns = X_train.columns[fit_idx]
+                val_columns = X_train.columns[val_idx]
+
+                X_fit = X_train[fit_columns]
+                y_fit = y_train[fit_columns]
+                X_val = X_train[val_columns]
+                y_val = y_train[val_columns]
+
+                # Compute p-values once per fold
+                if feature_selector == 'anova':
+                    selector = SelectKBest(score_func=f_regression, k='all')
+                    selector.fit(X_fit.T, y_fit)
+                    pvalues = selector.pvalues_
+                elif feature_selector == 'spearman':
+                    pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
+                elif feature_selector == 'pearson':
+                    pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
+                else:
+                    raise ValueError("feature_selector must be 'anova', 'spearman', or 'pearson'")
+
+                for k, params in enumerate(param_combinations):
+                    # Make a copy of params to avoid modifying the original
+                    params_copy = params.copy()
+                    # Extract p_value and remove it from params_copy
+                    p_value = params_copy.pop('p_value')
+
+                    mask = pvalues <= p_value
+
+                    # If no features are selected, penalize and continue
+                    if not np.any(mask):
+                        avg_mse[k] += 1e6 / n_splits  # Penalize for no features selected
+                        continue
+
+                    X_fit_selected = X_fit.loc[mask]
+                    X_val_selected = X_val.loc[mask]
+
+                    estimator = model.__class__(max_iter=10)  # Increase max_iter if needed
+                    estimator.set_params(**params_copy)
+
+                    try:
+                        estimator.fit(X_fit_selected.T, y_fit)
+                        y_pred = estimator.predict(X_val_selected.T)
+                        mse = mean_squared_error(y_val, y_pred)
+                        avg_mse[k] += mse / n_splits
+                    except Exception as e:
+                        # In case of any error during fitting/predicting, set mse to a large number
+                        avg_mse[k] += 1e6 / n_splits
+                        # Optionally, print or log the exception e
+
+            # Select the best parameters based on avg_mse
+            best_index = np.argmin(avg_mse)
+            # Make a copy of best_params to avoid modifying the original
+            best_params = param_combinations[best_index].copy()
+            best_p_value = best_params.pop('p_value')
+
+            # Perform feature selection on full X_train using best_p_value
+            if feature_selector == 'anova':
+                selector = SelectKBest(score_func=f_regression, k='all')
+                selector.fit(X_train.T, y_train)
+                pvalues = selector.pvalues_
+                mask = pvalues <= best_p_value
+            elif feature_selector == 'spearman':
+                pvalues = np.array([spearmanr(X_train.loc[i], y_train)[1] for i in X_train.index])
+                mask = pvalues <= best_p_value
+            elif feature_selector == 'pearson':
+                pvalues = np.array([pearsonr(X_train.loc[i], y_train)[1] for i in X_train.index])
+                mask = pvalues <= best_p_value
+
+            # If no features are selected, skip to next iteration
+            if not np.any(mask):
+                continue
+
+            X_train_selected = X_train.loc[mask]
+            X_test_selected = X_test.loc[mask]
+
             
-            # remove all proteins but one from y
-            yp_train = y_train[protein]
-            yp_test = y_test[protein]
-
-            # select the best features by F-value
-            selector = SelectKBest(score_func=f_regression, k=anova_features)
-            selector.fit_transform(X_train, yp_train)
-            
-            # remove all other features from X
-            selected_indices = np.where(selector.get_support())[0]
-            selected_features = X_train.columns[selected_indices]
-            Xp_train = X_train[selected_features]
-            Xp_test = X_test[selected_features]
-
-            # initialize best_params variable
-            best_params = param_combinations[0]
-            best_params_mse = np.inf
-
-            for params in param_combinations:
-
-                avg_mse = 0
-
-                for fold in folds:
-
-                    # fit and validation indices
-                    fit_idx, val_idx = fold
-
-                    # construct sets
-                    X_fit = Xp_train.iloc[fit_idx]
-                    y_fit = yp_train.iloc[fit_idx]
-                    X_val = Xp_train.iloc[val_idx]
-                    y_val = yp_train.iloc[val_idx]
-
-                    # build model for this fold and get predictions
-                    estimator = model
-                    estimator.set_params(**params)
-
-                    estimator.fit(X_fit, y_fit)
-                    y_pred = estimator.predict(X_val)
-
-                    # get mse on this fold
-                    mse = mean_squared_error(y_val, y_pred)
-                    avg_mse += mse
-                
-                # get mse for parameter configuration
-                avg_mse /= len(folds)
-
-                # update best config if these parameters have the lowest mean mse
-                if avg_mse < best_params_mse:
-                    best_params_mse = avg_mse
-                    best_params = params
-                
-            # train the final model with the best parameters
-            estimator = model
+            estimator = model.__class__(max_iter=100)  
             estimator.set_params(**best_params)
 
-            estimator.fit(Xp_train, yp_train)
-            y_pred = model.predict(Xp_test)
+            try:
+                estimator.fit(X_train_selected.T, y_train)
+                y_pred = estimator.predict(X_test_selected.T)
+            except Exception as e:
+                y_pred = np.nan  # If fitting fails, set prediction to NaN
+                # Optionally, print or log the exception e
 
-            # add entry to the results table
-            df.loc[len(df)] = [
-                protein,
-                sample,
-                yp_test.values[0],
-                y_pred[0],
-                best_params
-            ]
-        
+            # Add p_value back to params for recording
+            best_params['p_value'] = best_p_value
+            best_params['feature_selector'] = feature_selector
+
+            df.loc[len(df)] = {
+                'protein': protein,
+                'LOO sample': sample,
+                'true': y_test.values[0],
+                'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
+                'params': best_params
+            }
+
     return df
