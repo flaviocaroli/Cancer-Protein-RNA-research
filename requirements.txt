@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+joblib
+argparse
+matplotlib
+seaborn
+scipy
+-c conda-forge xgboost-gpu

@@ -81,7 +81,7 @@ def single_protein_pipeline(model,
 
             # Compute p-values once per fold
             if feature_selector == 'anova':
-                selector = SelectKBest(score_func=f_regression, k='all')
+                selector = SelectKBest(score_func=f_regression, k='25996')
                 selector.fit(X_fit.T, y_fit)
                 pvalues = selector.pvalues_
                 feature_index = X_fit.index
@@ -128,7 +128,7 @@ def single_protein_pipeline(model,
         # Final training on full X_train with selected p-value
         X_train_t = X_train.T
         if feature_selector == 'anova':
-            selector = SelectKBest(score_func=f_regression, k='all')
+            selector = SelectKBest(score_func=f_regression, k='25996')
             selector.fit(X_train_t.T, y_train)
             pvalues = selector.pvalues_
             mask = pvalues <= best_p_value
@@ -361,8 +361,8 @@ def protein_selection_pipeline(model,
     else:
         raise ValueError("feature_selector must be 'anova', 'spearman', or 'pearson'")
 
-    # **Apply Fixed p-Value Threshold (0.1)**
-    mask = pvalues <= 0.1
+    # **Apply Fixed p-Value Threshold (0.05)**
+    mask = pvalues <= 0.05
     selected_feature_names = X_t.index[mask]
     X_selected = X[selected_feature_names]  # Reduce dataset to selected features
 
