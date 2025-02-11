@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import ElasticNet
 from joblib import load
-from pipeline_proteins.src.pipeline_functions import single_protein_pipeline, sample_selection_pipeline, protein_selection_pipeline
+from pipeline_proteins.src.pipeline_functions import cv_pipeline_variable_p, cv_pipeline_fixed_p
 import xgboost as xgb
 
 # Utility function to select the pipeline
@@ -14,12 +14,11 @@ def select_pipeline(pipeline_name, model_type):
     Selects the appropriate pipeline based on the input name and model type.
     """
     pipelines = {
-        'single': single_protein_pipeline,
-        'sample': sample_selection_pipeline,
-        'protein': protein_selection_pipeline
+        'variable_p': cv_pipeline_variable_p,  # Pipeline with variable p-values
+        'fixed_p': cv_pipeline_fixed_p         # Pipeline with fixed p-value
     }
     if pipeline_name not in pipelines:
-        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'single', 'sample', or 'protein'.")
+        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'variable_p' or 'fixed_p'.")
     
     if model_type not in ['elasticnet', 'xgboost']:
         raise ValueError(f"Invalid model type: {model_type}. Choose from 'elasticnet' or 'xgboost'.")
@@ -29,8 +28,8 @@ def select_pipeline(pipeline_name, model_type):
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Run pipeline on a single protein (LOO for all samples).')
 parser.add_argument('--protein', type=str, required=True, help='Protein name')
-parser.add_argument('--pipeline', type=str, required=True, choices=['single', 'sample', 'protein'],
-                    help="Pipeline type: 'single', 'sample', or 'protein'")
+parser.add_argument('--pipeline', type=str, required=True, choices=['variable_p', 'fixed_p'],
+                    help="Pipeline type: 'variable_p' (variable p-values) or 'fixed_p' (fixed p-value)")
 parser.add_argument('--model', type=str, required=True, choices=['elasticnet', 'xgboost'],
                     help="Model type: 'elasticnet' or 'xgboost'")
 args = parser.parse_args()
@@ -62,19 +61,12 @@ if protein_name not in proteomics.columns:
 # Define models and parameter grids
 if model_type == 'elasticnet':
     model = ElasticNet()
-    param_grid_elasticnet = {
-        'alpha': [0.1, 0.3],          # Regularization strengths
-        'l1_ratio': [0.1, 0.5, 0.9],  # Mix of L1 and L2
-        'p_value': [0.1, 0.05, 0.01]  # P-values for feature selection
-    }
-    param_grid_elasticnet2 = {
+    
+    param_grid = {
         'alpha': [0.1, 0.5, 1, 10],   # Regularization strengths
         'l1_ratio': [0.1, 0.5, 0.9],  # Mix of L1 and L2
     }
-    if pipeline_name in ['sample', 'protein']:
-        param_grid = param_grid_elasticnet2
-    else:
-        param_grid = param_grid_elasticnet
+       
 elif model_type == 'xgboost':
     model = xgb.XGBRegressor()
     param_grid = {
@@ -95,15 +87,27 @@ pipeline, model_type = select_pipeline(pipeline_name, model_type)
 print(f"Running {pipeline_name} pipeline for protein {protein_name} over all samples (LOO)...")
 try:
     # Run the selected pipeline for the single protein
-    results_df = pipeline(
-        model=model,
-        param_grid=param_grid,
-        X=transcriptomics,
-        y=proteomics,
-        protein_name=protein_name,
-        feature_selector='anova',
-        n_splits=n_splits
-    )
+    if pipeline_name == 'variable_p':
+        results_df = pipeline(
+            model=model,
+            param_grid=param_grid,
+            X=transcriptomics,
+            y=proteomics,
+            protein_name=protein_name,
+            feature_selector='anova',
+            n_splits=n_splits
+        )
+    elif pipeline_name == 'fixed_p':
+        results_df = pipeline(
+            model=model,
+            param_grid=param_grid,
+            X=transcriptomics,
+            y=proteomics,
+            protein_name=protein_name,
+            feature_selector='anova',
+            n_splits=n_splits,
+            p_value=0.05  # Fixed p-value
+        )
 except Exception as e:
     print(f"Error during pipeline execution: {e}")
     sys.exit(1)
