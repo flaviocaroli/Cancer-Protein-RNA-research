@@ -4,7 +4,7 @@ from sklearn.model_selection import KFold
 from sklearn.feature_selection import SelectPercentile, f_regression
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr, pearsonr
-
+import itertools
 # Fix seed globally for NumPy and scikit-learn
 np.random.seed(42)
 
