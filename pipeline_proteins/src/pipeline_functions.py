@@ -6,27 +6,9 @@ from sklearn.feature_selection import SelectKBest, f_regression
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr, pearsonr
 
-def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_selector='anova', n_splits=5, n_samples=None, p_values=None):
+def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, p_values=None):
     """
     Perform leave-one-out (LOO) cross-validation for a single protein with variable p-values for feature selection.
-    For each sample:
-      - Hold out the sample as the test set.
-      - Perform K-fold CV on the remaining samples to select the best model parameters and features.
-      - Retrain on the remaining samples and predict the held-out sample.
-    
-    Parameters:
-    - model: sklearn-like estimator (e.g., ElasticNet)
-    - param_grid: dict of parameters to try
-    - X: pandas DataFrame of transcriptomics data (samples x features)
-    - y: pandas DataFrame of proteomics data (samples x proteins)
-    - protein_name: str, the name of the protein to analyze
-    - feature_selector: 'anova', 'spearman', or 'pearson' for feature selection
-    - n_splits: int, number of folds for K-fold CV
-    - n_samples: int, optional, to limit the number of samples (for debugging)
-    - p_values: list of floats, p-values for feature selection (default: [0.1, 0.05, 0.01])
-
-    Returns:
-    - df: DataFrame with results for each LOO sample, including true and predicted values, parameters, and selected features.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
@@ -39,8 +21,7 @@ def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_select
     X = X.loc[sample_list]
     y_protein = y_protein.loc[sample_list]
     
-    df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 
-                               'params_dict', 'features_coef_dict', 'p_value'])
+    results = []  # Collect results in a list
     
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -104,14 +85,18 @@ def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_select
             
             try:
                 estimator.fit(X_train_selected, y_train)
-                features_coef = dict(zip(best_features, estimator.coef_))
+                if hasattr(estimator, 'coef_'):
+                    features_coef = dict(zip(best_features, estimator.coef_))
+                elif hasattr(estimator, 'feature_importances_'):
+                    features_coef = dict(zip(best_features, estimator.feature_importances_))
+                
                 X_test_selected = X_test[best_features]
                 y_pred = estimator.predict(X_test_selected)
             except:
                 y_pred = np.nan
             
-            # Store results in the DataFrame
-            df.loc[len(df)] = {
+            # Store results in the list
+            results.append({
                 'protein': protein_name,
                 'LOO sample': sample,
                 'true': y_test.values[0],
@@ -119,44 +104,23 @@ def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_select
                 'params_dict': best_params,
                 'features_coef_dict': features_coef,
                 'p_value': p_value
-            }
+            })
     
-    return df
+    return pd.DataFrame(results)  # Convert list to DataFrame once
 
-
-def cv_pipeline_fixed_p(model, param_grid, X, y, protein_name, feature_selector='anova', n_splits=5, n_samples=None, p_value=0.05):
+def cv_pipeline_fixed_p(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, p_value=0.05):
     """
     Perform leave-one-out (LOO) cross-validation for a single protein with a fixed p-value for feature selection.
-    For each sample:
-      - Hold out the sample as the test set.
-      - Perform K-fold CV on the remaining samples to select the best model parameters.
-      - Retrain on the remaining samples and predict the held-out sample.
-    
-    Parameters:
-    - model: sklearn-like estimator (e.g., ElasticNet)
-    - param_grid: dict of parameters to try
-    - X: pandas DataFrame of transcriptomics data (samples x features)
-    - y: pandas DataFrame of proteomics data (samples x proteins)
-    - protein_name: str, the name of the protein to analyze
-    - feature_selector: 'anova', 'spearman', or 'pearson' for feature selection
-    - n_splits: int, number of folds for K-fold CV
-    - n_samples: int, optional, to limit the number of samples (for debugging)
-    - p_value: float, fixed p-value for feature selection (default: 0.05)
-
-    Returns:
-    - df: DataFrame with results for each LOO sample, including true and predicted values, parameters, and selected features.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
     
     y_protein = y[protein_name]
-    
     sample_list = X.index if n_samples is None else X.index[:n_samples]
     X = X.loc[sample_list]
     y_protein = y_protein.loc[sample_list]
 
-    df = pd.DataFrame(columns=['protein', 'LOO sample', 'true', 'predicted', 
-                             'params_dict', 'features_coef_dict', 'p_value'])
+    results = []  # Collect results in a list
 
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
@@ -229,15 +193,18 @@ def cv_pipeline_fixed_p(model, param_grid, X, y, protein_name, feature_selector=
             estimator.set_params(**param_combinations[min_mse_idx])
             try:
                 estimator.fit(X_train_selected.T, y_train)
-                features_coef = dict(zip(selected_features, estimator.coef_))
+                if hasattr(estimator, 'coef_'):
+                    features_coef = dict(zip(selected_features, estimator.coef_))
+                elif hasattr(estimator, 'feature_importances_'):
+                    features_coef = dict(zip(selected_features, estimator.feature_importances_))
                 
                 X_test_selected = X_test.T.loc[selected_features]
                 y_pred = estimator.predict(X_test_selected.T)
             except:
                 y_pred = np.nan
 
-        # Store results in the DataFrame
-        df.loc[len(df)] = {
+        # Store results in the list
+        results.append({
             'protein': protein_name,
             'LOO sample': sample,
             'true': y_test.values[0],
@@ -245,6 +212,6 @@ def cv_pipeline_fixed_p(model, param_grid, X, y, protein_name, feature_selector=
             'params_dict': best_params,
             'features_coef_dict': features_coef,
             'p_value': p_value
-        }
+        })
 
-    return df
+    return pd.DataFrame(results)  # Convert list to DataFrame once

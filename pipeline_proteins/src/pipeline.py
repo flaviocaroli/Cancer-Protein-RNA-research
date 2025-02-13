@@ -4,9 +4,9 @@ import argparse
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import ElasticNet
-from joblib import load
-from pipeline_proteins.src.pipeline_functions import cv_pipeline_variable_p, cv_pipeline_fixed_p
+from joblib import load, dump
 import xgboost as xgb
+from pipeline_functions import cv_pipeline_variable_p, cv_pipeline_fixed_p
 
 # Utility function to select the pipeline
 def select_pipeline(pipeline_name, model_type):
@@ -61,12 +61,10 @@ if protein_name not in proteomics.columns:
 # Define models and parameter grids
 if model_type == 'elasticnet':
     model = ElasticNet()
-    
     param_grid = {
         'alpha': [0.1, 0.5, 1, 10],   # Regularization strengths
         'l1_ratio': [0.1, 0.5, 0.9],  # Mix of L1 and L2
     }
-       
 elif model_type == 'xgboost':
     model = xgb.XGBRegressor()
     param_grid = {
@@ -94,7 +92,7 @@ try:
             X=transcriptomics,
             y=proteomics,
             protein_name=protein_name,
-            feature_selector='anova',
+            feature_selector='pearson',
             n_splits=n_splits
         )
     elif pipeline_name == 'fixed_p':
@@ -104,7 +102,7 @@ try:
             X=transcriptomics,
             y=proteomics,
             protein_name=protein_name,
-            feature_selector='anova',
+            feature_selector='pearson',
             n_splits=n_splits,
             p_value=0.05  # Fixed p-value
         )
@@ -112,11 +110,11 @@ except Exception as e:
     print(f"Error during pipeline execution: {e}")
     sys.exit(1)
 
-# Save results
-output_file = os.path.join(data_dir, f"{protein_name}_{pipeline_name}_{model_type}_LOO_results.csv")
+# Save results using Joblib
+output_file = os.path.join(data_dir, f"{protein_name}_{pipeline_name}_{model_type}_LOO_results.joblib")
 try:
     print(f"Saving results to {output_file}...")
-    results_df.to_csv(output_file, index=False)
+    dump(results_df, output_file)
     print("Pipeline finished successfully.")
 except Exception as e:
     print(f"Error saving results: {e}")
