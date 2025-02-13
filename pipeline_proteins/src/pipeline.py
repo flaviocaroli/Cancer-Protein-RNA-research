@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.linear_model import ElasticNet
 from joblib import load, dump
 import xgboost as xgb
-from pipeline_functions import cv_pipeline_variable_p, cv_pipeline_fixed_p
+from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_variable_p, cv_pipeline_fixed_p
 
 # Utility function to select the pipeline
 def select_pipeline(pipeline_name, model_type):
@@ -14,11 +14,12 @@ def select_pipeline(pipeline_name, model_type):
     Selects the appropriate pipeline based on the input name and model type.
     """
     pipelines = {
-        'variable_p': cv_pipeline_variable_p,  # Pipeline with variable p-values
-        'fixed_p': cv_pipeline_fixed_p         # Pipeline with fixed p-value
+        'fixed_percentile': cv_pipeline_fixed_percentile,  # Pipeline with fixed percentile
+        'variable_p': cv_pipeline_variable_p,              # Pipeline with variable p-values
+        'fixed_p': cv_pipeline_fixed_p                     # Pipeline with fixed p-value
     }
     if pipeline_name not in pipelines:
-        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'variable_p' or 'fixed_p'.")
+        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'fixed_percentile', 'variable_p', or 'fixed_p'.")
     
     if model_type not in ['elasticnet', 'xgboost']:
         raise ValueError(f"Invalid model type: {model_type}. Choose from 'elasticnet' or 'xgboost'.")
@@ -28,8 +29,8 @@ def select_pipeline(pipeline_name, model_type):
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Run pipeline on a single protein (LOO for all samples).')
 parser.add_argument('--protein', type=str, required=True, help='Protein name')
-parser.add_argument('--pipeline', type=str, required=True, choices=['variable_p', 'fixed_p'],
-                    help="Pipeline type: 'variable_p' (variable p-values) or 'fixed_p' (fixed p-value)")
+parser.add_argument('--pipeline', type=str, required=True, choices=['fixed_percentile', 'variable_p', 'fixed_p'],
+                    help="Pipeline type: 'fixed_percentile', 'variable_p' (variable p-values), or 'fixed_p' (fixed p-value)")
 parser.add_argument('--model', type=str, required=True, choices=['elasticnet', 'xgboost'],
                     help="Model type: 'elasticnet' or 'xgboost'")
 args = parser.parse_args()
@@ -85,7 +86,7 @@ pipeline, model_type = select_pipeline(pipeline_name, model_type)
 print(f"Running {pipeline_name} pipeline for protein {protein_name} over all samples (LOO)...")
 try:
     # Run the selected pipeline for the single protein
-    if pipeline_name == 'variable_p':
+    if pipeline_name == 'fixed_percentile':
         results_df = pipeline(
             model=model,
             param_grid=param_grid,
@@ -93,7 +94,19 @@ try:
             y=proteomics,
             protein_name=protein_name,
             feature_selector='pearson',
-            n_splits=n_splits
+            n_splits=n_splits,
+            percentile=5  # Fixed percentile
+        )
+    elif pipeline_name == 'variable_p':
+        results_df = pipeline(
+            model=model,
+            param_grid=param_grid,
+            X=transcriptomics,
+            y=proteomics,
+            protein_name=protein_name,
+            feature_selector='pearson',
+            n_splits=n_splits,
+            p_values=[0.1, 0.05, 0.01]  # Variable p-values
         )
     elif pipeline_name == 'fixed_p':
         results_df = pipeline(
