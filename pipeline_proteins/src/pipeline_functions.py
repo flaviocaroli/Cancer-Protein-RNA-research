@@ -7,6 +7,15 @@ from scipy.stats import spearmanr, pearsonr
 import itertools
 # Fix seed globally for NumPy and scikit-learn
 np.random.seed(42)
+## percentile with feature selection just after the leave one out outside cross validation
+## function to select and save the feature selection without the regression model
+
+
+
+
+def feature_selection_percentile(X, y, percentile=10):
+    pass
+
 
 def cv_pipeline_fixed_percentile(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, percentile=10):
     """
