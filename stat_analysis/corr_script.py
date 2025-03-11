@@ -15,7 +15,7 @@ def main():
     protein_name = args.protein
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(current_dir, "data")
+    data_dir = os.path.join(current_dir, "data") ## add '..' if there is a src folder
     transcriptomics_file = os.path.join(data_dir, "transcriptomics_filtered.joblib")
     proteomics_file = os.path.join(data_dir, "proteomics_matched.joblib")
     output_dir = os.path.join(data_dir, "correlations")

@@ -50,6 +50,10 @@ print("Loading data...")
 try:
     transcriptomics = load(transcriptomics_file)  # samples x features
     proteomics = load(proteomics_file)            # samples x proteins
+    transcriptomics.index.name = "samples"
+    proteomics.index.name = "samples"
+    proteomics.columns.name = "proteins"
+    transcriptomics.columns.name = "genes"
 except Exception as e:
     print(f"Error loading data: {e}")
     sys.exit(1)
