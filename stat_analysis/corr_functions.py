@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import pearsonr
 
-def compute_correlation_for_protein(transcriptomics, proteomics, protein_name, p_threshold=0.05, bootstrap=False, n_bootstraps=10):
+def compute_correlation_for_protein(transcriptomics, proteomics, protein_name, p_threshold=0.05, bootstrap=True, n_bootstraps=10):
     """
     Computes Pearson correlations between the given protein and all genes.
     
