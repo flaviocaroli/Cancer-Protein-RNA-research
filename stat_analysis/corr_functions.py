@@ -1,8 +1,10 @@
 import pandas as pd 
 import numpy as np
 from scipy.stats import pearsonr
+from scipy.stats import spearmanr
 
-def compute_correlation_for_protein(transcriptomics, proteomics, protein_name, p_threshold=0.05, bootstrap=True, n_bootstraps=10):
+
+def compute_correlation_for_protein(transcriptomics, proteomics, protein_name, p_threshold=0.05, bootstrap=True, n_bootstraps=100):
     """
     Computes Pearson correlations between the given protein and all genes.
     
@@ -41,16 +43,16 @@ def compute_correlation_for_protein(transcriptomics, proteomics, protein_name, p
 
             if not bootstrap:
                 # Compute using the standard Pearson correlation test
-                corr_val, p_val = pearsonr(data_prot, data_gene)
+                corr_val, p_val = spearmanr(data_prot, data_gene)
                 correlations[gene] = corr_val if p_val < p_threshold else 0.0
             else:
                 # Compute the observed correlation (for reference)
-                observed_corr = np.corrcoef(data_prot, data_gene)[0, 1]
+                observed_corr, _ = spearmanr(data_prot, data_gene)
                 boot_corrs = []
                 # Bootstrap resampling: sample with replacement and compute correlations
                 for _ in range(n_bootstraps):
                     indices = np.random.choice(len(common_samples), size=len(common_samples), replace=True)
-                    boot_corr = np.corrcoef(data_prot[indices], data_gene[indices])[0, 1]
+                    boot_corr, _ = spearmanr(data_prot[indices], data_gene[indices])
                     boot_corrs.append(boot_corr)
                 # Compute 95% confidence interval from bootstrap distribution
                 ci_lower, ci_upper = np.percentile(boot_corrs, [2.5, 97.5])
