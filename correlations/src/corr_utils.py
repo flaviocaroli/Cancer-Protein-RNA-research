@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+
 
 from scipy.spatial.distance import pdist, squareform
 import scipy.cluster.hierarchy as sch
@@ -300,3 +302,117 @@ def plot_consensus_matrix(consensus_matrix, k, figsize=(10, 8)):
     plt.title(f'Consensus Matrix for k={k}', fontsize=16)
     plt.tight_layout()
     return plt
+
+# Function to read cluster assignments from CSV files
+def read_cluster_files(directory):
+    results = {}
+    if not os.path.exists(directory):
+        print(f"Directory {directory} does not exist!")
+        return results
+        
+    for filename in os.listdir(directory):
+        if filename.endswith('.csv'):
+            # Extract k value from filename
+            if 'k' in filename:
+                k = int(filename.split('k')[1].split('.')[0])
+                file_path = os.path.join(directory, filename)
+                df = pd.read_csv(file_path)
+                results[k] = df
+    return results
+
+# Function to compute overlap between two cluster assignments
+def compute_overlap(df1, df2, df1_name="Dataset1", df2_name="Dataset2", output_file="cluster_comparison.csv"):
+    # Merge the two dataframes on protein ID
+    merged = pd.merge(df1, df2, on='Protein', suffixes=('_1', '_2'))
+    
+    # Rename columns for clarity in the output file
+    merged = merged.rename(columns={
+        'Cluster_1': f'{df1_name}_Cluster',
+        'Cluster_2': f'{df2_name}_Cluster'
+    })
+    
+    # Create contingency table
+    contingency = pd.crosstab(merged[f'{df1_name}_Cluster'], merged[f'{df2_name}_Cluster'])
+    
+    # Get total number of proteins
+    total_proteins = len(merged)
+    
+    # Calculate cluster overlap counts
+    overlap_count = 0
+    for i in range(len(contingency)):
+        max_overlap = contingency.iloc[i].max()
+        overlap_count += max_overlap
+    
+    # Calculate overlap percentage
+    overlap_percentage = (overlap_count / total_proteins) * 100
+    
+    # Sort the merged dataframe:
+    # First proteins with matching clusters from cluster 1
+    # Then proteins with matching clusters from cluster 2
+    # Finally proteins with mismatching clusters
+    
+    # Create a column to identify if clusters match
+    merged['Clusters_Match'] = merged[f'{df1_name}_Cluster'] == merged[f'{df2_name}_Cluster']
+    
+    # Sort the dataframe
+    sorted_merged = pd.concat([
+        # Matching with cluster 1
+        merged[(merged['Clusters_Match']) & (merged[f'{df1_name}_Cluster'] == 1)],
+        # Matching with cluster 2
+        merged[(merged['Clusters_Match']) & (merged[f'{df1_name}_Cluster'] == 2)],
+        # Mismatching clusters
+        merged[~merged['Clusters_Match']]
+    ])
+    
+    # Save to file (drop the match column as it's just for sorting)
+    sorted_merged.drop('Clusters_Match', axis=1).to_csv(output_file, index=False)
+    
+    # Return both percentage and actual count of overlapping proteins
+    return overlap_count, overlap_percentage, contingency
+
+# Function to compute retained genes per threshold
+def compute_gene_retention(df_cluster, percentiles):
+    vals = df_cluster.values.flatten()
+    vals = vals[~np.isnan(vals)]
+    abs_vals = np.abs(vals)
+    thresholds = {p: np.percentile(abs_vals, p) for p in percentiles}
+
+    retained = {}
+    for p, thr in thresholds.items():
+        # For each gene (column), check if **any** protein has correlation above threshold
+        retain_mask = (np.abs(df_cluster) >= thr).any(axis=0)
+        retained[p] = retain_mask.sum()
+    return thresholds, retained
+
+# Function to compute consensus across three cluster assignments
+def compute_consensus(df1, df2, df3):
+    # Merge all three dataframes on protein ID
+    merged = pd.merge(df1, df2, on='Protein', suffixes=('_1', '_2'))
+    merged = pd.merge(merged, df3, on='Protein')
+    merged.rename(columns={'Cluster': 'Cluster_3'}, inplace=True)
+    
+    # Count how many proteins have the same cluster assignment in all methods
+    all_match = (merged['Cluster_1'] == merged['Cluster_2']) & (merged['Cluster_2'] == merged['Cluster_3'])
+    total_consensus = all_match.sum()
+    
+    # Count pairwise agreements
+    pair1_match = (merged['Cluster_1'] == merged['Cluster_2']).sum()
+    pair2_match = (merged['Cluster_2'] == merged['Cluster_3']).sum()
+    pair3_match = (merged['Cluster_1'] == merged['Cluster_3']).sum()
+    
+    total_proteins = len(merged)
+    
+    # Calculate percentages
+    all_consensus_pct = (total_consensus / total_proteins) * 100
+    pair1_pct = (pair1_match / total_proteins) * 100
+    pair2_pct = (pair2_match / total_proteins) * 100
+    pair3_pct = (pair3_match / total_proteins) * 100
+    
+    return {
+        'all_consensus': all_consensus_pct,
+        'pg_pp_overlap': pair1_pct,
+        'pp_pe_overlap': pair2_pct,
+        'pg_pe_overlap': pair3_pct,
+        'total_proteins': total_proteins,
+        'full_consensus_count': total_consensus
+    }
