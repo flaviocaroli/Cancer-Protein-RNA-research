@@ -375,13 +375,20 @@ def compute_gene_retention(df_cluster, percentiles):
     vals = df_cluster.values.flatten()
     vals = vals[~np.isnan(vals)]
     abs_vals = np.abs(vals)
-    thresholds = {p: np.percentile(abs_vals, p) for p in percentiles}
-
+    
+    # Create dictionaries to store thresholds and retained gene counts
+    thresholds = {}
     retained = {}
-    for p, thr in thresholds.items():
-        # For each gene (column), check if **any** protein has correlation above threshold
+    
+    for p in percentiles:
+        # Calculate threshold at this percentile
+        thr = np.percentile(abs_vals, p)
+        thresholds[p] = thr
+        
+        # For each gene (column), check if ANY protein has correlation above threshold
         retain_mask = (np.abs(df_cluster) >= thr).any(axis=0)
         retained[p] = retain_mask.sum()
+    
     return thresholds, retained
 
 # Function to compute consensus across three cluster assignments
