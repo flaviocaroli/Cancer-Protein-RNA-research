@@ -1,4 +1,3 @@
-```markdown
 # Cancer-Proteins-Prediction-Research
 
 Prediction and statistical analysis of protein abundances in cancer cell lines using correlations, linear regressions, boosting methods, and deep learning.
