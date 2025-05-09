@@ -19,7 +19,7 @@ protein_list_file = os.path.join(data_dir, "protein_list.txt")
 
 try:
     with open(protein_list_file, "w") as f:
-        for protein in protein_list:
+        for protein in protein_list[0]: # REMOVE [0] TO CONSIDER ALL PROTEINS
             f.write(f"{protein}\n")
     print(f"Protein list written to {protein_list_file}, total proteins: {len(protein_list)}")
 except Exception as e:
