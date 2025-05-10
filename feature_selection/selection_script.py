@@ -13,7 +13,7 @@ parser.add_argument('--percentile', type=float, default=5,
                     help='Percentile threshold (0-100) for feature selection (default: 5)')
 args = parser.parse_args()
 
-protein_name = args.protein
+protein_name = args.protein.rstrip()
 percentile = args.percentile
 
 # Define paths
