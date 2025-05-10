@@ -19,10 +19,9 @@ protein_list_file = os.path.join(data_dir, "protein_list.txt")
 
 try:
     with open(protein_list_file, "w") as f:
+        # for protein in protein_list[a:b]:
         for protein in protein_list:
             f.write(f"{protein}\n")
-        # protein = protein_list[0]
-        # f.write(f"{protein}\n")
     print(f"Protein list written to {protein_list_file}, total proteins: {len(protein_list)}")
 except Exception as e:
     print(f"Error writing protein list: {e}")

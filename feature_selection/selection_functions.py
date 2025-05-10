@@ -98,16 +98,11 @@ def naive_cluster_feature_selection(X, y, protein_name):
     """
     Perform leave-one-out (LOO) feature selection for a single protein using a fixed percentile threshold.
     
-    For each left-out sample, the training set is used to compute three types of feature selection:
-      - 'anova': Uses f_regression to obtain F scores and p-values.
-      - 'pearson': Computes Pearson correlation coefficients and p-values for each feature.
-      - 'spearman': Computes Spearman correlation coefficients and p-values for each feature.
-      
-    For each method, the threshold is defined as the given percentile of the p-values computed over the training set.
-    Only features with p-values below or equal to that threshold are selected, and their weight is defined as:
-      - anova: the F score (higher means more predictive)
-      - pearson: the Pearson correlation coefficient
-      - spearman: the Spearman correlation coefficient
+    For each left-out sample, the training set is used to compute Pearson's correlation
+    coefficient between the protein profile and each gene expression profile.
+
+    The number of selected features varies from protein to protein based on their cluster.
+    The features with the highest correletion coefficient are kept and saved.
 
     Parameters:
         X (pd.DataFrame): DataFrame of predictors (samples x features).
@@ -115,9 +110,8 @@ def naive_cluster_feature_selection(X, y, protein_name):
         protein_name (str): The protein column name in y to analyze.
 
     Returns:
-        pd.DataFrame: A DataFrame whose index corresponds to the left-out sample and three columns:
-                      'anova', 'pearson', 'spearman'. Each cell contains a dict mapping selected
-                      feature names to their weight.
+        pd.DataFrame: A DataFrame whose index corresponds to the left-out sample and one column:
+                      'pearson'. Each cell contains a list of the selected genes, per sample.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
