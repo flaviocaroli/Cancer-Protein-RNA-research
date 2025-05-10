@@ -2,7 +2,7 @@ import os
 import sys
 import argparse
 from joblib import load, dump
-from selection_functions import feature_selection
+from selection_functions import feature_selection, naive_cluster_feature_selection
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(
@@ -19,7 +19,7 @@ percentile = args.percentile
 # Define paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
 data_dir = os.path.abspath(os.path.join(current_dir, "data")) ## add '..' if there is a src folder
-transcriptomics_file = os.path.join(data_dir, "transcriptomics_filtered.joblib")
+transcriptomics_file = os.path.join(data_dir, "transcriptomics_kde_filtered.joblib")
 proteomics_file = os.path.join(data_dir, "proteomics_matched.joblib")
 
 # Load data
@@ -42,18 +42,17 @@ if protein_name not in proteomics.columns:
 
 print(f"Running feature selection pipeline for protein {protein_name} over all samples (LOO)...")
 try:
-    results_df = feature_selection(
+    results_df = naive_cluster_feature_selection(
         X=transcriptomics,
         y=proteomics,
-        protein_name=protein_name,
-        percentile=percentile
+        protein_name=protein_name
     )
 except Exception as e:
     print(f"Error during pipeline execution: {e}")
     sys.exit(1)
 
 # Save results using Joblib
-output_file = os.path.join(data_dir, f"{protein_name}_feature_selection_LOO_{percentile}percentile.joblib")
+output_file = os.path.join(data_dir, f"{protein_name}_feature_selection_LOO.joblib")
 try:
     print(f"Saving results to {output_file}...")
     dump(results_df, output_file)
