@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.linear_model import ElasticNet
 from joblib import load, dump
 import xgboost as xgb
-from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_variable_p, cv_pipeline_fixed_p
+from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_variable_p, cv_pipeline_fixed_p, cv_pipeline_fixed_features
 
 # Utility function to select the pipeline
 def select_pipeline(pipeline_name, model_type):
@@ -16,8 +16,10 @@ def select_pipeline(pipeline_name, model_type):
     pipelines = {
         'fixed_percentile': cv_pipeline_fixed_percentile,  # Pipeline with fixed percentile
         'variable_p': cv_pipeline_variable_p,              # Pipeline with variable p-values
-        'fixed_p': cv_pipeline_fixed_p                     # Pipeline with fixed p-value
+        'fixed_p': cv_pipeline_fixed_p,                    # Pipeline with fixed p-value
+        'fixed_features': cv_pipeline_fixed_features       # Pipeline with fixed features
     }
+
     if pipeline_name not in pipelines:
         raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'fixed_percentile', 'variable_p', or 'fixed_p'.")
     
@@ -122,6 +124,16 @@ try:
             feature_selector='pearson',
             n_splits=n_splits,
             p_value=0.05  # Fixed p-value
+        )
+    elif pipeline_name == 'fixed_features':
+        results_df = pipeline(
+            model=model,
+            param_grid=param_grid,
+            X=transcriptomics,
+            y=proteomics,
+            protein_name=protein_name,
+            features=load(f"data/{protein_name}_feature_selection_LOO.joblib"),
+            n_splits=n_splits
         )
 except Exception as e:
     print(f"Error during pipeline execution: {e}")

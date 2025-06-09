@@ -4,7 +4,7 @@ CHUNK_SIZE=500
 TOTAL_PROTEINS=5113 # 3000
 DATA_DIR=~/pipeline_proteins/data
 SRC_DIR=~/pipeline_proteins/src
-PIPELINE_TYPE="fixed_percentile"  # Change this to 'fixed_percentile', 'variable_p', or 'fixed_p' as needed
+PIPELINE_TYPE="fixed_features"  # Change this to 'fixed_percentile', 'variable_p', 'fixed_p', or 'fixed_features' as needed
 MODEL_TYPE="elasticnet"           # Change this to 'elasticnet' or 'xgboost' as needed
 
 # Ensure the protein list file exists
