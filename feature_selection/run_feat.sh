@@ -40,6 +40,7 @@ for START in $(seq 1 $CHUNK_SIZE $TOTAL_PROTEINS); do
 
 # Load your conda or other modules as needed
 module load miniconda3
+source activate base
 conda activate test_env
 
 # Move to the directory with your Python scripts

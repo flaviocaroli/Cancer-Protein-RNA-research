@@ -19,6 +19,7 @@ protein_list_file = os.path.join(data_dir, "protein_list.txt")
 
 try:
     with open(protein_list_file, "w") as f:
+        # for protein in protein_list[a:b]:
         for protein in protein_list:
             f.write(f"{protein}\n")
     print(f"Protein list written to {protein_list_file}, total proteins: {len(protein_list)}")
