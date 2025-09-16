@@ -1,80 +1,162 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---------- USER SETTINGS ----------
+# ========= USER SETTINGS =========
 CHUNK_SIZE=${CHUNK_SIZE:-500}
-DATA_DIR=${DATA_DIR:-$HOME/pipeline_proteins/data}
-SRC_DIR=${SRC_DIR:-$HOME/pipeline_proteins/src}
-PIPELINE_TYPE=${PIPELINE_TYPE:-single}   # aliases: single|sample|protein (mapped in pipeline.py)
+
+DATA_DIR=${DATA_DIR:-$HOME/pipeline_xgb/data}
+SRC_DIR=${SRC_DIR:-$HOME/pipeline_xgb/src}
+LOG_DIR=${LOG_DIR:-$HOME/pipeline_xgb/logs}
+
+PIPELINE_TYPE=${PIPELINE_TYPE:-single}   # aliases: single|sample|protein
 MODEL_TYPE=${MODEL_TYPE:-xgboost}
-PARTITION=${PARTITION:-medium_gpu}       # adjust to your cluster
+
+# Choose a GPU partition that exists on your cluster
+PARTITION=${PARTITION:-medium_gpu}       # gpu | medium_gpu | long_gpu | debug_gpu | gpu_plus_8
+
+# Keep within partition limits (medium_gpu: 03:10:00; 24/32 CPUs)
 GPUS_PER_TASK=${GPUS_PER_TASK:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-20}
 MEM=${MEM:-32G}
 TIME=${TIME:-03:00:00}
-ENV_ACTIVATE_LINE=${ENV_ACTIVATE_LINE:-"module load miniconda3 && source ~/.bashrc && conda activate test_env"}
-FORCE_GPU=${FORCE_GPU:-1}                # 1 -> pass --force_gpu to pipeline.py
 
-# ---------- PREP LIST OF PROTEINS ----------
-mkdir -p "$DATA_DIR"
-if [[ ! -f "$DATA_DIR/protein_list.txt" ]]; then
-  echo "protein_list.txt not found — creating it from proteomics_matched.joblib ..."
-  python - <<'PY'
-from joblib import load
-import os
-import sys
-data_dir = os.environ.get("DATA_DIR")
-Y = load(os.path.join(data_dir, "proteomics_matched.joblib"))
-with open(os.path.join(data_dir, "protein_list.txt"), "w") as f:
-    for p in Y.columns:
-        f.write(str(p) + "\n")
-print(f"Wrote {len(Y.columns)} proteins to protein_list.txt")
-PY
+# Force XGBoost GPU only (1) vs allow CPU fallback (0)
+FORCE_GPU=${FORCE_GPU:-1}
+
+# Throttle concurrent tasks per array (helps QoSMaxGRESPerUser)
+ARRAY_LIMIT=${ARRAY_LIMIT:-}   # empty = no throttle; set 1 or 2 to cap
+
+# Array range:
+# If protein_list.txt exists, we’ll use its line count.
+# Otherwise, we submit up to a safe upper bound and let extra tasks exit fast.
+MAX_PROTEINS_GUESS=${MAX_PROTEINS_GUESS:-6000}
+
+# ========= PREP =========
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+export DATA_DIR
+
+if [[ -f "$DATA_DIR/protein_list.txt" ]]; then
+  TOTAL_PROTEINS=$(wc -l < "$DATA_DIR/protein_list.txt" | tr -d ' ')
+else
+  echo "No protein_list.txt found; using MAX_PROTEINS_GUESS=${MAX_PROTEINS_GUESS}."
+  TOTAL_PROTEINS=${MAX_PROTEINS_GUESS}
 fi
+echo "TOTAL_PROTEINS=${TOTAL_PROTEINS}  CHUNK_SIZE=${CHUNK_SIZE}  PARTITION=${PARTITION}  ARRAY_LIMIT=${ARRAY_LIMIT:-none}"
 
-TOTAL_PROTEINS=${TOTAL_PROTEINS:-$(wc -l < "$DATA_DIR/protein_list.txt")}
-echo "TOTAL_PROTEINS=$TOTAL_PROTEINS  CHUNK_SIZE=$CHUNK_SIZE"
+ARRAY_LIMIT_OPT=""
+[[ -n "${ARRAY_LIMIT}" ]] && ARRAY_LIMIT_OPT="%${ARRAY_LIMIT}"
 
-# ---------- SUBMIT CHUNKS AS ARRAY JOBS ----------
-for START in $(seq 1 $CHUNK_SIZE $TOTAL_PROTEINS); do
+# ========= SUBMIT CHUNKS =========
+for START in $(seq 1 "$CHUNK_SIZE" "$TOTAL_PROTEINS"); do
   END=$((START + CHUNK_SIZE - 1))
-  if [[ $END -gt $TOTAL_PROTEINS ]]; then END=$TOTAL_PROTEINS; fi
+  [[ $END -gt $TOTAL_PROTEINS ]] && END=$TOTAL_PROTEINS
 
   sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=xgb_${START}_${END}
+#SBATCH --partition=${PARTITION}
+#SBATCH --time=${TIME}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
-#SBATCH --time=${TIME}
-#SBATCH --partition=${PARTITION}
 #SBATCH --mem=${MEM}
-#SBATCH --array=${START}-${END}
-#SBATCH --gpus=${GPUS_PER_TASK}
-# If your cluster uses gres instead of --gpus, comment the previous line and use:
-# #SBATCH --gres=gpu:${GPUS_PER_TASK}
+#SBATCH --array=${START}-${END}${ARRAY_LIMIT_OPT}
+# Request a full GA100 GPU (matches sinfo GRES)
+#SBATCH --gres=gpu:GA100:${GPUS_PER_TASK}
+#SBATCH -o ${LOG_DIR}/%x_%A_%a.out
 
-echo "Job \$SLURM_JOB_ID Task \$SLURM_ARRAY_TASK_ID starting on \$(hostname)"
-echo "CUDA devices visible: \$CUDA_VISIBLE_DEVICES"
+set -euo pipefail
+echo "Job \$SLURM_JOB_ID Task \$SLURM_ARRAY_TASK_ID on \$(hostname)"
+echo "Partition: ${PARTITION}  Time: ${TIME}  CPUs: ${CPUS_PER_TASK}  Mem: ${MEM}  GPUs: ${GPUS_PER_TASK}"
+echo "CUDA_VISIBLE_DEVICES=\$CUDA_VISIBLE_DEVICES"
 
-# ---- ENV / MODULES ----
-${ENV_ACTIVATE_LINE}
-# Optional: load CUDA explicitly if your site requires it, e.g.:
-# module load cuda/12.2
+# ---- ENV / MODULES (bootstrap conda + deps) ----
+set +u
+module load miniconda3
+source "\$(conda info --base)/etc/profile.d/conda.sh"
 
-export CUDA_VISIBLE_DEVICES=0
+# create env if missing
+if ! conda env list | awk '{print \$1}' | grep -qx "test_env"; then
+  conda create -y -n test_env python=3.10
+fi
+conda activate test_env
+set -u
+
+# ---- REQUIRED DEPS ----
+DEPS=(joblib pandas numpy scipy scikit-learn "xgboost>=2.0" "openpyxl>=3.1")
+mkdir -p "\$HOME/.env_locks"
+LOCKDIR="\$HOME/.env_locks/test_env_install.lock"
+
+MISSING=\$(python - <<'PY'
+import pkgutil
+need=["joblib","pandas","numpy","scipy","sklearn","xgboost","openpyxl"]
+missing=[m for m in need if pkgutil.find_loader(m) is None]
+print(" ".join(missing))
+PY
+)
+
+if [[ -n "\$MISSING" ]]; then
+  if mkdir "\$LOCKDIR" 2>/dev/null; then
+    trap 'rmdir "\$LOCKDIR"' EXIT
+    echo "Installing missing packages: \$MISSING"
+    conda install -y -c conda-forge "\${DEPS[@]}" || {
+      echo "Conda install failed or partial; falling back to pip for remaining..."
+      python -m pip install -U pip
+      python - <<'PY'
+import sys, subprocess, pkgutil
+deps=["joblib","pandas","numpy","scipy","scikit-learn","xgboost>=2.0","openpyxl>=3.1"]
+for d in deps:
+    name=d.split("==")[0].split(">=")[0]
+    if pkgutil.find_loader(name) is None:
+        subprocess.check_call([sys.executable,"-m","pip","install","-U","--no-cache-dir",d])
+PY
+    }
+  else
+    echo "Waiting for another task to finish env install..."
+    while [[ -d "\$LOCKDIR" ]]; do sleep 10; done
+  fi
+fi
+
+which python
+python -V
+python - <<'PY'
+import joblib, pandas as pd, numpy as np, sklearn, xgboost as xgb, openpyxl
+print("joblib", joblib.__version__,
+      "| pandas", pd.__version__,
+      "| numpy", np.__version__,
+      "| sklearn", sklearn.__version__,
+      "| xgboost", xgb.__version__,
+      "| openpyxl", openpyxl.__version__)
+PY
 
 # ---- RUN ----
 cd "${SRC_DIR}"
 
-PROTEIN_NAME=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${DATA_DIR}/protein_list.txt")
+# Determine protein name by index directly from the joblib (no prebuilt list needed)
+PROTEIN_NAME=\$(python - <<'PY'
+import os, sys
+from joblib import load
+data_dir = os.environ["DATA_DIR"]
+task_id = int(os.environ["SLURM_ARRAY_TASK_ID"])
+Y = load(os.path.join(data_dir, "proteomics_matched.joblib"))
+cols = list(Y.columns)
+n = len(cols)
+if task_id > n:
+    print("")  # signal to skip
+else:
+    print(cols[task_id-1])
+PY
+)
+
+if [[ -z "\$PROTEIN_NAME" ]]; then
+  echo "Task \${SLURM_ARRAY_TASK_ID} exceeds number of proteins; exiting."
+  exit 0
+fi
+
 echo "Protein: \${PROTEIN_NAME}"
 
-if [[ ${FORCE_GPU} -eq 1 ]]; then
-  GPU_FLAG="--force_gpu"
-else
-  GPU_FLAG=""
-fi
+GPU_FLAG=""
+[[ ${FORCE_GPU} -eq 1 ]] && GPU_FLAG="--force_gpu"
 
 python pipeline.py \
   --protein "\${PROTEIN_NAME}" \
@@ -86,7 +168,7 @@ python pipeline.py \
   --pvalue 0.05 \
   \${GPU_FLAG}
 
-echo "Task \$SLURM_ARRAY_TASK_ID finished."
+echo "Task \${SLURM_ARRAY_TASK_ID} finished."
 EOF
 
   echo "Submitted array ${START}-${END}"

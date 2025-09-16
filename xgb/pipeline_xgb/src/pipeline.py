@@ -3,10 +3,11 @@ import os
 import sys
 import argparse
 from joblib import load, dump
-import pandas as pd
 import xgboost as xgb
 
-from xgb.pipeline_xgb.src.pipeline_functions import (
+# --- import pipeline functions from the same folder ---
+# (we run from SRC_DIR, so a simple relative import works)
+from pipeline_functions import (
     cv_pipeline_fixed_percentile,
     cv_pipeline_variable_p,
     cv_pipeline_fixed_p,
@@ -14,7 +15,6 @@ from xgb.pipeline_xgb.src.pipeline_functions import (
 )
 
 ALIAS_MAP = {
-    # allow your bash PIPELINE_TYPE="single" etc.
     "single": "fixed_percentile",
     "sample": "variable_p",
     "protein": "fixed_p",
@@ -38,17 +38,12 @@ def parse_args():
     p.add_argument("--percentile", type=float, default=5.0, help="For fixed_percentile.")
     p.add_argument("--pvalue", type=float, default=0.05, help="For fixed_p.")
     p.add_argument("--features_path", type=str, default=None, help="For fixed_features (joblib list of features).")
-    p.add_argument(
-        "--force_gpu",
-        action="store_true",
-        help="Force GPU (restrict param grid to gpu_hist only)."
-    )
+    p.add_argument("--force_gpu", action="store_true", help="Force GPU (restrict param grid to gpu_hist only).")
     return p.parse_args()
 
 def main():
     args = parse_args()
 
-    # map aliases
     pipeline_name = ALIAS_MAP.get(args.pipeline, args.pipeline)
 
     # Paths relative to src/
@@ -72,7 +67,6 @@ def main():
         print(f"Protein '{protein}' not in proteomics.")
         sys.exit(1)
 
-    # Base model (params set by grid inside pipelines)
     model = xgb.XGBRegressor(
         objective="reg:squarederror",
         n_jobs=-1,
@@ -80,7 +74,6 @@ def main():
         verbosity=0,
     )
 
-    # Hyperparameter grid
     if args.force_gpu:
         param_grid = {
             "max_depth": [3, 6, 9],
@@ -88,7 +81,7 @@ def main():
             "n_estimators": [100, 200],
             "subsample": [0.8, 1.0],
             "colsample_bytree": [0.8, 1.0],
-            "tree_method": ["gpu_hist"],  # force GPU
+            "tree_method": ["gpu_hist"],
         }
     else:
         param_grid = {
@@ -97,43 +90,27 @@ def main():
             "n_estimators": [100, 200],
             "subsample": [0.8, 1.0],
             "colsample_bytree": [0.8, 1.0],
-            "tree_method": ["gpu_hist", "hist"],  # try GPU first, fall back to CPU
+            "tree_method": ["gpu_hist", "hist"],
         }
 
     print(f"Running {pipeline_name} for protein '{protein}' (LOO across samples)...")
-
     try:
         if pipeline_name == "fixed_percentile":
             results_df = cv_pipeline_fixed_percentile(
-                model=model,
-                param_grid=param_grid,
-                X=X,
-                y=Y,
-                protein_name=protein,
-                feature_selector=args.feature_selector,
-                n_splits=args.splits,
+                model=model, param_grid=param_grid, X=X, y=Y, protein_name=protein,
+                feature_selector=args.feature_selector, n_splits=args.splits,
                 percentile=float(args.percentile),
             )
         elif pipeline_name == "variable_p":
             results_df = cv_pipeline_variable_p(
-                model=model,
-                param_grid=param_grid,
-                X=X,
-                y=Y,
-                protein_name=protein,
-                feature_selector=args.feature_selector,
-                n_splits=args.splits,
+                model=model, param_grid=param_grid, X=X, y=Y, protein_name=protein,
+                feature_selector=args.feature_selector, n_splits=args.splits,
                 p_values=[0.1, 0.05, 0.01],
             )
         elif pipeline_name == "fixed_p":
             results_df = cv_pipeline_fixed_p(
-                model=model,
-                param_grid=param_grid,
-                X=X,
-                y=Y,
-                protein_name=protein,
-                feature_selector=args.feature_selector,
-                n_splits=args.splits,
+                model=model, param_grid=param_grid, X=X, y=Y, protein_name=protein,
+                feature_selector=args.feature_selector, n_splits=args.splits,
                 p_value=float(args.pvalue),
             )
         elif pipeline_name == "fixed_features":
@@ -142,13 +119,8 @@ def main():
                 print(f"Fixed-features file not found: {features_path}")
                 sys.exit(1)
             results_df = cv_pipeline_fixed_features(
-                model=model,
-                param_grid=param_grid,
-                X=X,
-                y=Y,
-                protein_name=protein,
-                features=load(features_path),
-                n_splits=args.splits,
+                model=model, param_grid=param_grid, X=X, y=Y, protein_name=protein,
+                features=load(features_path), n_splits=args.splits,
             )
         else:
             raise ValueError(f"Unknown pipeline: {pipeline_name}")
