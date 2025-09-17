@@ -11,24 +11,27 @@ LOG_DIR=${LOG_DIR:-$HOME/pipeline_xgb/logs}
 PIPELINE_TYPE=${PIPELINE_TYPE:-single}   # aliases: single|sample|protein
 MODEL_TYPE=${MODEL_TYPE:-xgboost}
 
-# Choose a GPU partition that exists on your cluster
-PARTITION=${PARTITION:-medium_gpu}       # gpu | medium_gpu | long_gpu | debug_gpu | gpu_plus_8
+# If 3h isn't enough on your cluster, default to long_gpu. Override at run time if you like.
+PARTITION=${PARTITION:-long_gpu}          # gpu | medium_gpu | long_gpu | debug_gpu | gpu_plus_8
 
-# Keep within partition limits (medium_gpu: 03:10:00; 24/32 CPUs)
+# Keep within partition limits (long_gpu: up to 3-00:10:00 on your cluster)
 GPUS_PER_TASK=${GPUS_PER_TASK:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-20}
 MEM=${MEM:-32G}
-TIME=${TIME:-03:00:00}
+TIME=${TIME:-12:00:00}                    # bumpable; must be <= partition limit
 
-# Force XGBoost GPU only (1) vs allow CPU fallback (0)
+# XGBoost GPU only (1) vs allow CPU fallback (0)
 FORCE_GPU=${FORCE_GPU:-1}
 
-# Throttle concurrent tasks per array (helps QoSMaxGRESPerUser)
-ARRAY_LIMIT=${ARRAY_LIMIT:-}   # empty = no throttle; set 1 or 2 to cap
+# Lighter pipeline knobs (forwarded to pipeline.py)
+SPLITS=${SPLITS:-5}                       # fewer inner folds speeds things up
+PRESELECT_K=${PRESELECT_K:-5000}          # fast corr prefilter before p-values
+EARLY_STOPPING=${EARLY_STOPPING:-50}      # early stopping rounds in inner CV
 
-# Array range:
-# If protein_list.txt exists, we’ll use its line count.
-# Otherwise, we submit up to a safe upper bound and let extra tasks exit fast.
+# Throttle concurrent tasks per array (helps QOSMaxGRESPerUser)
+ARRAY_LIMIT=${ARRAY_LIMIT:-}              # empty = no throttle; set 1 or 2 to cap
+
+# If protein_list.txt exists we’ll use it; otherwise submit a safe upper bound
 MAX_PROTEINS_GUESS=${MAX_PROTEINS_GUESS:-6000}
 
 # ========= PREP =========
@@ -61,7 +64,7 @@ for START in $(seq 1 "$CHUNK_SIZE" "$TOTAL_PROTEINS"); do
 #SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --mem=${MEM}
 #SBATCH --array=${START}-${END}${ARRAY_LIMIT_OPT}
-# Request a full GA100 GPU (matches sinfo GRES)
+# Request a full GA100 GPU (matches your sinfo GRES)
 #SBATCH --gres=gpu:GA100:${GPUS_PER_TASK}
 #SBATCH -o ${LOG_DIR}/%x_%A_%a.out
 
@@ -158,14 +161,17 @@ echo "Protein: \${PROTEIN_NAME}"
 GPU_FLAG=""
 [[ ${FORCE_GPU} -eq 1 ]] && GPU_FLAG="--force_gpu"
 
+# Forward the "lighter" flags to pipeline.py
 python pipeline.py \
   --protein "\${PROTEIN_NAME}" \
   --pipeline ${PIPELINE_TYPE} \
   --model ${MODEL_TYPE} \
-  --splits 5 \
+  --splits ${SPLITS} \
   --feature_selector pearson \
   --percentile 5.0 \
   --pvalue 0.05 \
+  --preselect_k ${PRESELECT_K} \
+  --early_stopping ${EARLY_STOPPING} \
   \${GPU_FLAG}
 
 echo "Task \${SLURM_ARRAY_TASK_ID} finished."
