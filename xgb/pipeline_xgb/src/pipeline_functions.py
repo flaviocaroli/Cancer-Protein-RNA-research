@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import itertools
-from typing import Iterable, Sequence, Tuple, Optional
+from typing import Sequence, Tuple, Optional
 
 from sklearn.model_selection import KFold
 from sklearn.feature_selection import SelectKBest, f_regression
@@ -11,9 +11,24 @@ import xgboost as xgb
 
 np.random.seed(42)
 
+# ----------------------
+# Utilities
+# ----------------------
 def _all_param_combinations(param_grid: dict) -> Sequence[dict]:
+    """Cartesian product of param grid (empty -> [{}])."""
+    if not param_grid:
+        return [dict()]
     keys, values = zip(*param_grid.items())
     return [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+def _sample_param_combos(param_grid: dict, max_param_combos: Optional[int]) -> Sequence[dict]:
+    """Optionally sample a subset of param combos for speed."""
+    combos = _all_param_combinations(param_grid)
+    if max_param_combos is not None and len(combos) > max_param_combos:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(combos), size=max_param_combos, replace=False)
+        combos = [combos[i] for i in idx]
+    return combos
 
 def _clone_xgb_with_params(params: dict, seed: int = 42) -> xgb.XGBRegressor:
     base = dict(objective="reg:squarederror", n_jobs=-1, random_state=seed, verbosity=0)
@@ -21,6 +36,7 @@ def _clone_xgb_with_params(params: dict, seed: int = 42) -> xgb.XGBRegressor:
     return xgb.XGBRegressor(**base)
 
 def _compute_pvalues(X: pd.DataFrame, y: pd.Series, method: str) -> np.ndarray:
+    """Return per-feature p-values for association with y."""
     if method == "anova":
         sel = SelectKBest(score_func=f_regression, k="all")
         sel.fit(X, y)
@@ -31,24 +47,15 @@ def _compute_pvalues(X: pd.DataFrame, y: pd.Series, method: str) -> np.ndarray:
         pvals = np.array([pearsonr(X.iloc[:, i], y)[1] for i in range(X.shape[1])])
     else:
         raise ValueError(f"Unknown feature selection method: {method}")
+    # Replace non-finite with 1.0 so they rank last
     return np.where(np.isfinite(pvals), pvals, 1.0)
 
-def feature_selection_percentile(X: pd.DataFrame, y: pd.Series, percentile: float = 10.0, method: str = "pearson") -> pd.Index:
+def _select_topk_by_pvalue(X: pd.DataFrame, y: pd.Series, method: str, k: int) -> pd.Index:
+    """Keep top-k features with smallest p-values (guarantee at least 1)."""
+    k_eff = max(1, min(int(k), X.shape[1]))
     pvals = _compute_pvalues(X, y, method)
-    thresh = np.percentile(pvals, percentile)
-    mask = pvals <= thresh
-    if not np.any(mask):
-        mask = pvals <= np.sort(pvals)[0]
-    return X.columns[mask]
-
-def _select_by_pvalue(X: pd.DataFrame, y: pd.Series, p_value: float, method: str) -> pd.Index:
-    pvals = _compute_pvalues(X, y, method)
-    mask = pvals <= p_value
-    if not np.any(mask):
-        k = max(1, int(0.01 * X.shape[1]))
-        top_idx = np.argsort(pvals)[:k]
-        return X.columns[top_idx]
-    return X.columns[mask]
+    top_idx = np.argsort(pvals)[:k_eff]
+    return X.columns[top_idx]
 
 def _fast_prefilter_corr(X: pd.DataFrame, y: pd.Series, k: Optional[int]) -> pd.Index:
     """Keep top-k columns by absolute Pearson corr (vectorized & fast)."""
@@ -57,235 +64,200 @@ def _fast_prefilter_corr(X: pd.DataFrame, y: pd.Series, k: Optional[int]) -> pd.
     s = X.corrwith(y).fillna(0.0).abs()
     return s.nlargest(k).index
 
+def _to_f32(df: pd.DataFrame) -> np.ndarray:
+    return df.to_numpy(dtype=np.float32, copy=False)
+
+def _to_f32_series(s: pd.Series) -> np.ndarray:
+    return s.to_numpy(dtype=np.float32, copy=False)
+
+# ----------------------
+# Inner CV: pick params & features (no leakage)
+# ----------------------
 def _fit_and_score_cv(
-    model: xgb.XGBRegressor,
     param_grid: dict,
     X_train: pd.DataFrame,
     y_train: pd.Series,
     feature_selector: str,
-    select_mode: str,
-    select_value: float,
+    select_k: int,
     n_splits: int,
     preselect_k: Optional[int] = None,
     early_stopping_rounds: int = 50,
+    max_param_combos: Optional[int] = None,
 ) -> Tuple[dict, pd.Index]:
-    params_list = _all_param_combinations(param_grid)
+    """
+    Inner KFold CV to choose best params. Feature selection happens *inside each fold*:
+      1) optional fast prefilter by |corr| (top preselect_k)
+      2) select top-k by (method) p-value
+    After picking best params, recompute features on the *full* outer training set.
+    If select_k <= 0, disables all feature selection (keeps all columns).
+    """
+    params_list = _sample_param_combos(param_grid, max_param_combos)
     avg_mse = np.zeros(len(params_list), dtype=float)
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    # Preselect once per full X_train for consistency across folds
-    keep_full = _fast_prefilter_corr(X_train, y_train, preselect_k)
-    X_train = X_train[keep_full]
-
     for fit_idx, val_idx in kf.split(X_train):
-        X_fit, X_val = X_train.iloc[fit_idx], X_train.iloc[val_idx]
+        X_fit_full, X_val_full = X_train.iloc[fit_idx], X_train.iloc[val_idx]
         y_fit, y_val = y_train.iloc[fit_idx], y_train.iloc[val_idx]
 
-        if select_mode == "percentile":
-            sel_features = feature_selection_percentile(X_fit, y_fit, float(select_value), feature_selector)
-        elif select_mode == "pvalue":
-            sel_features = _select_by_pvalue(X_fit, y_fit, float(select_value), feature_selector)
+        # No feature selection path
+        if select_k <= 0:
+            X_fit, X_val = X_fit_full, X_val_full
+            sel_features = X_fit.columns
         else:
-            raise ValueError("select_mode must be 'percentile' or 'pvalue'.")
+            # 1) prefilter INSIDE the fold to avoid leakage
+            keep = _fast_prefilter_corr(X_fit_full, y_fit, preselect_k)
+            X_fit, X_val = X_fit_full[keep], X_val_full[keep]
+            # 2) select top-k by p-value (inside the fold)
+            sel_features = _select_topk_by_pvalue(X_fit, y_fit, feature_selector, select_k)
 
-        if len(sel_features) == 0:
-            continue
+        X_fit_sel, X_val_sel = X_fit[sel_features], X_val[sel_features]
 
-        X_fit_sel = X_fit[sel_features]
-        X_val_sel = X_val[sel_features]
+        X_fit_np = _to_f32(X_fit_sel)
+        X_val_np = _to_f32(X_val_sel)
+        y_fit_np = _to_f32_series(y_fit)
+        y_val_np = _to_f32_series(y_val)
 
         for k_idx, params in enumerate(params_list):
             est = _clone_xgb_with_params(params, seed=42)
             try:
                 if early_stopping_rounds and early_stopping_rounds > 0:
                     est.fit(
-                        X_fit_sel, y_fit,
-                        eval_set=[(X_val_sel, y_val)],
+                        X_fit_np, y_fit_np,
+                        eval_set=[(X_val_np, y_val_np)],
                         early_stopping_rounds=int(early_stopping_rounds),
                         verbose=False,
                     )
                 else:
-                    est.fit(X_fit_sel, y_fit)
-                pred = est.predict(X_val_sel)
-                mse = mean_squared_error(y_val, pred)
+                    est.fit(X_fit_np, y_fit_np)
+                pred = est.predict(X_val_np)
+                mse = mean_squared_error(y_val_np, pred)
                 avg_mse[k_idx] += mse / n_splits
             except Exception:
+                # Penalize failures
                 avg_mse[k_idx] += 1e6 / n_splits
 
     best_idx = int(np.argmin(avg_mse))
-    best_params = params_list[best_idx]
+    best_params = params_list[best_idx] if len(params_list) > 0 else {}
 
-    # Recompute features on full training data (with the same preselection universe)
-    if select_mode == "percentile":
-        best_features = feature_selection_percentile(X_train, y_train, float(select_value), feature_selector)
+    # Recompute final selected features on full outer training set (no test data)
+    if select_k <= 0:
+        best_features = X_train.columns
     else:
-        best_features = _select_by_pvalue(X_train, y_train, float(select_value), feature_selector)
+        keep_full = _fast_prefilter_corr(X_train, y_train, preselect_k)
+        X_train_pref = X_train[keep_full]
+        best_features = _select_topk_by_pvalue(X_train_pref, y_train, feature_selector, select_k)
 
     return best_params, best_features
 
+# ----------------------
+# Final fit and predict on held-out sample
+# ----------------------
 def _fit_final_and_predict(params: dict, X_train_sel: pd.DataFrame, y_train: pd.Series, X_test_sel: pd.DataFrame):
     est = _clone_xgb_with_params(params, seed=42)
     try:
-        est.fit(X_train_sel, y_train)
-        y_pred = est.predict(X_test_sel)
+        Xtr = _to_f32(X_train_sel); ytr = _to_f32_series(y_train)
+        Xte = _to_f32(X_test_sel)
+        est.fit(Xtr, ytr)
+        y_pred = est.predict(Xte)
+
+        # Robust importances via booster (gain)
         imp = None
-        if hasattr(est, "feature_importances_") and len(X_train_sel.columns) == len(est.feature_importances_):
-            imp = dict(zip(X_train_sel.columns, est.feature_importances_.tolist()))
+        try:
+            booster = est.get_booster()
+            gain = booster.get_score(importance_type="gain")  # keys like "f0","f1",...
+            fmap = {f"f{i}": col for i, col in enumerate(X_train_sel.columns)}
+            imp = {fmap.get(k, k): float(v) for k, v in gain.items()}
+        except Exception:
+            pass
+
         return y_pred, imp
     except Exception:
         return np.array([np.nan]), None
 
-def cv_pipeline_fixed_percentile(
-    model, param_grid, X, y, protein_name,
-    feature_selector="pearson", n_splits=3, n_samples=None, percentile=10.0,
-    preselect_k: Optional[int] = 5000, early_stopping_rounds: int = 50,
-):
+# ----------------------
+# Single, unified LOO pipeline (outer LOO only)
+# ----------------------
+def cv_pipeline_loo(
+    model,  # kept for signature compatibility; not used
+    param_grid: dict,
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    protein_name: str,
+    *,
+    feature_selector: str = "spearman",   # "pearson" | "spearman" | "anova"
+    n_splits: int = 3,                    # inner CV folds for hyperparams
+    n_samples: Optional[int] = None,      # optional cap on number of samples
+    select_k: int = 500,                  # keep top-k by p-value; <=0 disables FS
+    preselect_k: Optional[int] = 5000,    # fast corr prefilter cap (None to disable)
+    early_stopping_rounds: int = 50,
+    minimal_save: bool = False,           # save only essentials
+    max_param_combos: Optional[int] = None,  # random cap of grid size
+) -> pd.DataFrame:
+    """
+    Outer loop: Leave-One-Out CV across samples.
+    Inner loop: KFold for hyperparameter tuning + in-fold feature selection.
+    Returns a tidy DataFrame with one row per held-out sample.
+    """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
+
     y_protein = y[protein_name]
     sample_list = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_list]; y_protein = y_protein.loc[sample_list]
+    X = X.loc[sample_list]
+    y_protein = y_protein.loc[sample_list]
+
     results = []
 
     for test_sample in sample_list:
-        X_train = X.drop(index=[test_sample]); y_train = y_protein.drop(index=[test_sample])
-        X_test = X.loc[[test_sample]]; y_test = y_protein.loc[[test_sample]]
+        # Outer LOO split
+        X_train = X.drop(index=[test_sample])
+        y_train = y_protein.drop(index=[test_sample])
+        X_test = X.loc[[test_sample]]
+        y_test = y_protein.loc[[test_sample]]
 
+        # Inner CV: choose params & features (no leakage)
         best_params, best_features = _fit_and_score_cv(
-            model, param_grid, X_train, y_train, feature_selector,
-            "percentile", float(percentile), n_splits,
-            preselect_k=preselect_k, early_stopping_rounds=early_stopping_rounds
+            param_grid=param_grid,
+            X_train=X_train,
+            y_train=y_train,
+            feature_selector=feature_selector,
+            select_k=int(select_k),
+            n_splits=int(n_splits),
+            preselect_k=preselect_k,
+            early_stopping_rounds=int(early_stopping_rounds),
+            max_param_combos=max_param_combos,
         )
-        Xtr = X_train[best_features]; Xte = X_test[best_features]
+
+        # Final fit on full training (outer) with chosen features, predict held-out
+        Xtr = X_train[best_features]
+        Xte = X_test[best_features]
         y_pred, feat_imp = _fit_final_and_predict(best_params, Xtr, y_train, Xte)
 
-        results.append({
-            "protein": protein_name,
-            "LOO sample": test_sample,
-            "true": y_test.values[0],
-            "predicted": y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-            "params_dict": {**best_params, "feature_selector": feature_selector, "percentile": float(percentile)},
-            "features_coef_dict": feat_imp,
-            "percentile": float(percentile),
-        })
-    return pd.DataFrame(results)
+        pred_val = float(y_pred[0]) if isinstance(y_pred, np.ndarray) else float(y_pred)
 
-def cv_pipeline_variable_p(
-    model, param_grid, X, y, protein_name,
-    feature_selector="pearson", n_splits=3, n_samples=None, p_values=None,
-    preselect_k: Optional[int] = 5000, early_stopping_rounds: int = 50,
-):
-    if protein_name not in y.columns:
-        raise ValueError(f"Protein {protein_name} not found in y columns.")
-    if p_values is None:
-        p_values = [0.1, 0.05, 0.01]
-
-    y_protein = y[protein_name]
-    sample_list = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_list]; y_protein = y_protein.loc[sample_list]
-    results = []
-
-    for test_sample in sample_list:
-        X_train = X.drop(index=[test_sample]); y_train = y_protein.drop(index=[test_sample])
-        X_test = X.loc[[test_sample]]; y_test = y_protein.loc[[test_sample]]
-
-        for pv in p_values:
-            best_params, best_features = _fit_and_score_cv(
-                model, param_grid, X_train, y_train, feature_selector,
-                "pvalue", float(pv), n_splits,
-                preselect_k=preselect_k, early_stopping_rounds=early_stopping_rounds
-            )
-            Xtr = X_train[best_features]; Xte = X_test[best_features]
-            y_pred, feat_imp = _fit_final_and_predict(best_params, Xtr, y_train, Xte)
+        if minimal_save:
             results.append({
                 "protein": protein_name,
                 "LOO sample": test_sample,
-                "true": y_test.values[0],
-                "predicted": y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-                "params_dict": {**best_params, "feature_selector": feature_selector, "p_value": float(pv)},
-                "features_coef_dict": feat_imp,
-                "p_value": float(pv),
+                "true": float(y_test.values[0]),
+                "predicted": pred_val,
             })
-    return pd.DataFrame(results)
+        else:
+            results.append({
+                "protein": protein_name,
+                "LOO sample": test_sample,
+                "true": float(y_test.values[0]),
+                "predicted": pred_val,
+                "params_dict": {
+                    **best_params,
+                    "feature_selector": feature_selector,
+                    "select_k": int(select_k),
+                    "preselect_k": None if preselect_k is None else int(preselect_k),
+                    "early_stopping_rounds": int(early_stopping_rounds),
+                    "inner_cv_folds": int(n_splits),
+                },
+                "features_coef_dict": feat_imp,                   # may be None
+                "features_selected": list(map(str, best_features)) # explicit list
+            })
 
-def cv_pipeline_fixed_p(
-    model, param_grid, X, y, protein_name,
-    feature_selector="pearson", n_splits=3, n_samples=None, p_value=0.05,
-    preselect_k: Optional[int] = 5000, early_stopping_rounds: int = 50,
-):
-    if protein_name not in y.columns:
-        raise ValueError(f"Protein {protein_name} not found in y columns.")
-    y_protein = y[protein_name]
-    sample_list = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_list]; y_protein = y_protein.loc[sample_list]
-    results = []
-
-    for test_sample in sample_list:
-        X_train = X.drop(index=[test_sample]); y_train = y_protein.drop(index=[test_sample])
-        X_test = X.loc[[test_sample]]; y_test = y_protein.loc[[test_sample]]
-
-        best_params, best_features = _fit_and_score_cv(
-            model, param_grid, X_train, y_train, feature_selector,
-            "pvalue", float(p_value), n_splits,
-            preselect_k=preselect_k, early_stopping_rounds=early_stopping_rounds
-        )
-        Xtr = X_train[best_features]; Xte = X_test[best_features]
-        y_pred, feat_imp = _fit_final_and_predict(best_params, Xtr, y_train, Xte)
-        results.append({
-            "protein": protein_name,
-            "LOO sample": test_sample,
-            "true": y_test.values[0],
-            "predicted": y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-            "params_dict": {**best_params, "feature_selector": feature_selector, "p_value": float(p_value)},
-            "features_coef_dict": feat_imp,
-            "p_value": float(p_value),
-        })
-    return pd.DataFrame(results)
-
-def cv_pipeline_fixed_features(
-    model, param_grid, X, y, protein_name, features: Iterable[str], n_splits=3, n_samples=None
-):
-    if protein_name not in y.columns:
-        raise ValueError(f"Protein {protein_name} not found in y columns.")
-    features = pd.Index(features)
-    missing = features.difference(X.columns)
-    if len(missing) > 0:
-        raise ValueError(f"{len(missing)} features not found in X. Example: {missing[:5].tolist()}")
-
-    y_protein = y[protein_name]
-    sample_list = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_list]; y_protein = y_protein.loc[sample_list]
-    results = []
-    params_list = _all_param_combinations(param_grid)
-
-    for test_sample in sample_list:
-        X_train = X.drop(index=[test_sample]); y_train = y_protein.drop(index=[test_sample])
-        X_test = X.loc[[test_sample]]; y_test = y_protein.loc[[test_sample]]
-
-        avg_mse = np.zeros(len(params_list), dtype=float)
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-        for fit_idx, val_idx in kf.split(X_train):
-            X_fit, X_val = X_train.iloc[fit_idx][features], X_train.iloc[val_idx][features]
-            y_fit, y_val = y_train.iloc[fit_idx], y_train.iloc[val_idx]
-            for k_idx, params in enumerate(params_list):
-                est = _clone_xgb_with_params(params, seed=42)
-                try:
-                    est.fit(X_fit, y_fit)
-                    pred = est.predict(X_val)
-                    avg_mse[k_idx] += mean_squared_error(y_val, pred) / n_splits
-                except Exception:
-                    avg_mse[k_idx] += 1e6 / n_splits
-
-        best_idx = int(np.argmin(avg_mse))
-        best_params = params_list[best_idx]
-        y_pred, feat_imp = _fit_final_and_predict(best_params, X_train[features], y_train, X_test[features])
-
-        results.append({
-            "protein": protein_name,
-            "LOO sample": test_sample,
-            "true": y_test.values[0],
-            "predicted": y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-            "params_dict": {**best_params, "feature_selector": "fixed_features"},
-            "features_coef_dict": feat_imp,
-        })
     return pd.DataFrame(results)
