@@ -3,33 +3,25 @@ import os
 import sys
 import argparse
 from joblib import load, dump
-import xgboost as xgb
 
 from pipeline_functions import cv_pipeline_loo
 
-# Back-compat aliases
-ALIAS_MAP = {"single": "loo", "sample": "loo", "protein": "loo"}
-
+# ----------------------
+# Arg parsing
+# ----------------------
 def parse_args():
     p = argparse.ArgumentParser(
         description="Run XGBoost LOO pipeline (outer LOO over samples) for a single protein."
     )
-    p.add_argument("--protein", required=True, type=str, help="Protein name (column in proteomics).")
-    p.add_argument("--pipeline", required=True, type=str,
-                   choices=["loo", "single", "sample", "protein"],
-                   help="Pipeline type (only 'loo' supported; aliases map to 'loo').")
-    p.add_argument("--model", required=True, type=str, choices=["xgboost"],
-                   help="Model type (only xgboost supported).")
+    # Required
+    p.add_argument("--protein", required=True, type=str,
+                   help="Protein name (column in proteomics).")
 
-    # Speed / selection knobs
-    p.add_argument("--splits", type=int, default=3, help="Inner CV folds (default: 3).")
-    p.add_argument("--feature_selector", type=str, default="spearman",
-                   choices=["pearson", "spearman", "anova"],
-                   help="Univariate selector to rank features (if selection enabled).")
+    # CV / speed controls
+    p.add_argument("--splits", type=int, default=3,
+                   help="Inner CV folds (default: 3).")
     p.add_argument("--select_k", type=int, default=500,
-                   help="Keep top-K features inside each inner fold; <=0 disables feature selection.")
-    p.add_argument("--preselect_k", type=int, default=5000,
-                   help="Fast prefilter by |Pearson corr| before p-values (None to disable).")
+                   help="Keep top-K features via Spearman prefilter per LOO split (0 = keep all).")
     p.add_argument("--early_stopping", type=int, default=50,
                    help="Early stopping rounds in inner CV (0 disables).")
     p.add_argument("--n_samples", type=int, default=None,
@@ -37,106 +29,104 @@ def parse_args():
     p.add_argument("--max_param_combos", type=int, default=None,
                    help="Randomly cap the number of hyperparam combos explored per inner CV.")
 
-    # Saving knobs
+    # Convenience flags
     p.add_argument("--minimal_save", action="store_true",
                    help="Save only [protein, LOO sample, true, predicted].")
-    p.add_argument("--force_gpu", action="store_true", help="Use GPU (gpu_hist).")
+    p.add_argument("--force_gpu", action="store_true",
+                   help="Use GPU (gpu_hist/gpu_predictor) if available.")
     p.add_argument("--no_feature_selection", action="store_true",
-                   help="Disable preselect + p-value feature selection (use all features).")
-
-    # Backward-compat NO-OP flags (accepted but ignored)
-    p.add_argument("--percentile", type=float, default=None, help=argparse.SUPPRESS)
-    p.add_argument("--pvalue", type=float, default=None, help=argparse.SUPPRESS)
-    p.add_argument("--features_path", type=str, default=None, help=argparse.SUPPRESS)
+                   help="Disable Spearman prefilter (equivalent to --select_k 0).")
     return p.parse_args()
 
-def main():
-    args = parse_args()
-    pipeline_name = ALIAS_MAP.get(args.pipeline, args.pipeline)  # -> 'loo'
-
-    # Optionally disable FS entirely
-    if args.no_feature_selection:
-        args.select_k = 0
-        args.preselect_k = None
-
-    # Paths relative to src/
+# ----------------------
+# Small helpers
+# ----------------------
+def data_paths():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.abspath(os.path.join(current_dir, "..", "data"))
     X_path = os.path.join(data_dir, "transcriptomics_filtered.joblib")
     Y_path = os.path.join(data_dir, "proteomics_matched.joblib")
+    return data_dir, X_path, Y_path
 
+def build_param_grid(use_gpu: bool):
+    common = {
+        "max_depth": [3, 6, 8],
+        "min_child_weight": [1, 3],          # stronger when larger
+        "gamma": [0.0, 0.1],                  # minimum loss reduction to split
+        "learning_rate": [0.05, 0.1],
+        "n_estimators": [600, 1200, 2000],    # early stopping will clip this
+
+        # sampling
+        "subsample": [0.7, 0.9],
+        "colsample_bytree": [0.6, 0.8, 1.0],
+
+        # regularization
+        "reg_alpha": [0.0, 0.1, 0.5],
+        "reg_lambda": [0.5, 1.0, 2.0],
+
+        # histogram params
+        "max_bin": [256],
+    }
+    if use_gpu:
+        return {**common,
+                "tree_method": ["gpu_hist"],
+                "predictor": ["gpu_predictor"]}
+    else:
+        return {**common,
+                "tree_method": ["hist"]}
+
+# ----------------------
+# Main
+# ----------------------
+def main():
+    args = parse_args()
+    pipeline_name = "loo"
+
+    # Handle convenience flag
+    if args.no_feature_selection:
+        args.select_k = 0
+
+    # Load data
+    data_dir, X_path, Y_path = data_paths()
     print("Loading data...")
     try:
         X = load(X_path)
         Y = load(Y_path)
-        X.index.name = "samples"; X.columns.name = "genes"
-        Y.index.name = "samples"; Y.columns.name = "proteins"
+        X.index.name, X.columns.name = "samples", "genes"
+        Y.index.name, Y.columns.name = "samples", "proteins"
     except Exception as e:
-        print(f"Error loading data: {e}")
+        print(f"Error loading data ({X_path} / {Y_path}): {e}")
         sys.exit(1)
 
     protein = args.protein
     if protein not in Y.columns:
-        print(f"Protein '{protein}' not in proteomics.")
+        print(f"Protein '{protein}' not found in proteomics.")
         sys.exit(1)
 
-    # Base model (unused directly but kept for signature)
-    model = xgb.XGBRegressor(
-        objective="reg:squarederror",
-        n_jobs=-1,
-        random_state=42,
-        verbosity=0,
-    )
+    use_gpu = bool(args.force_gpu)
+    param_grid = build_param_grid(use_gpu=use_gpu)
 
-    # Compact grids; rely on early stopping
-    if args.force_gpu:
-        param_grid = {
-            "max_depth": [3, 6],
-            "learning_rate": [0.1],
-            "n_estimators": [1200],
-            "subsample": [0.7, 0.9],
-            "colsample_bytree": [0.5, 0.8],
-            "reg_alpha": [0.0, 0.1],
-            "reg_lambda": [1.0],
-            "max_bin": [128],
-            "tree_method": ["gpu_hist"],
-            "predictor": ["gpu_predictor"],
-        }
-    else:
-        param_grid = {
-            "max_depth": [3, 6],
-            "learning_rate": [0.1],
-            "n_estimators": [1200],
-            "subsample": [0.7, 0.9],
-            "colsample_bytree": [0.5, 0.8],
-            "reg_alpha": [0.0, 0.1],
-            "reg_lambda": [1.0],
-            "max_bin": [128],
-            "tree_method": ["hist"],  # CPU fast histogram
-        }
-
-    print(f"Running {pipeline_name} for protein '{protein}' (LOO across samples)...")
+    print(f"Running {pipeline_name} for protein '{protein}' (outer LOO across samples)...")
     try:
         results_df = cv_pipeline_loo(
-            model=model,
+            model=None,                         # kept for API compatibility; unused
             param_grid=param_grid,
             X=X,
             y=Y,
             protein_name=protein,
-            feature_selector=args.feature_selector,
             n_splits=args.splits,
             n_samples=args.n_samples,
-            select_k=args.select_k,
-            preselect_k=args.preselect_k,
+            select_k=args.select_k,            # Spearman prefilter size per outer split (0 = all)
             early_stopping_rounds=args.early_stopping,
             minimal_save=args.minimal_save,
             max_param_combos=args.max_param_combos,
+            use_gpu=use_gpu,                   # works with the updated pipeline_functions.py
         )
     except Exception as e:
         print(f"Error during pipeline execution: {e}")
         sys.exit(1)
 
-    # Save compactly (try zstd -> fallback)
+    # Save
     out_path = os.path.join(data_dir, f"{protein}_{pipeline_name}_xgboost_LOO_results.joblib")
     try:
         print(f"Saving: {out_path}")
