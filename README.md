@@ -1,4 +1,4 @@
-# Cancer-Proteins-Prediction-Research
+# Cancer-Proteins-RNA-Research
 
 Prediction and statistical analysis of protein abundances in cancer cell lines using correlations, linear regressions, boosting methods, and deep learning.
 
@@ -6,6 +6,7 @@ Prediction and statistical analysis of protein abundances in cancer cell lines u
 
 - **Transcriptomics Dataset:** https://figshare.com/ndownloader/files/25797014  
 - **Proteomics Dataset:** https://gygi.hms.harvard.edu/data/ccle/Table_S2_Protein_Quant_Normalized.xlsx 
+- **Metadata:** https://figshare.com/ndownloader/files/25797011
 
 ## Usage Instructions
 
