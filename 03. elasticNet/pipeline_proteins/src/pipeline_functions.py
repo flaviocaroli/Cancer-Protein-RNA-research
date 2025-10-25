@@ -3,434 +3,450 @@ import pandas as pd
 from sklearn.model_selection import KFold
 from sklearn.feature_selection import SelectPercentile, f_regression, SelectKBest
 from sklearn.metrics import mean_squared_error
+from sklearn.linear_model import ElasticNet
 from scipy.stats import spearmanr, pearsonr
 import itertools
-# Fix seed globally for NumPy and scikit-learn
+
+# Fix seed globally for NumPy
 np.random.seed(42)
-## percentile with feature selection just after the leave one out outside cross validation
-## function to select and save the feature selection without the regression model
 
 
+# -----------------------------
+# Utilities
+# -----------------------------
+
+def _safe_corr_pvalue(x: np.ndarray, y: np.ndarray, method: str) -> float:
+    """Return a p-value for correlation; fall back to 1.0 on failure/NaN."""
+    try:
+        if method == 'spearman':
+            _, p = spearmanr(x, y)
+        else:
+            _, p = pearsonr(x, y)
+        if np.isnan(p):
+            return 1.0
+        return float(p)
+    except Exception:
+        return 1.0
 
 
-def feature_selection_percentile(X, y, percentile=10):
-    pass
-
-
-def cv_pipeline_fixed_percentile(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, percentile=10):
+def _pvalues_series(X_feat_by_sample: pd.DataFrame, y: pd.Series, method: str) -> pd.Series:
+    """Compute per-feature p-values (index: feature names).
+    X_feat_by_sample is expected to be features x samples (rows=features, cols=samples).
+    y is aligned to the columns (samples).
     """
-    Perform leave-one-out (LOO) cross-validation for a single protein with a fixed percentile for feature selection.
+    pv = [
+        _safe_corr_pvalue(X_feat_by_sample.loc[f].values, y.values, method)
+        for f in X_feat_by_sample.index
+    ]
+    return pd.Series(pv, index=X_feat_by_sample.index, dtype=float)
+
+
+def _select_features_percentile(X_feat_by_sample: pd.DataFrame,
+                                y: pd.Series,
+                                feature_selector: str,
+                                percentile: int) -> list:
+    """Return a list of selected features given a percentile and selector."""
+    if feature_selector == 'anova':
+        # anova requires shape (samples x features)
+        selector = SelectPercentile(score_func=f_regression, percentile=int(percentile))
+        selector.fit(X_feat_by_sample.T, y.values)
+        mask = selector.get_support()
+        return list(X_feat_by_sample.index[mask])
+
+    # Correlation-based (pearson/spearman): select the lowest p-values by percentile
+    method = 'spearman' if feature_selector == 'spearman' else 'pearson'
+    pv = _pvalues_series(X_feat_by_sample, y, method)
+    pv = pv.replace([np.inf, -np.inf], 1.0).fillna(1.0)
+    # threshold at the given percentile of p-values (lower is better)
+    thresh = np.percentile(pv.values, percentile)
+    selected = pv.index[pv.values <= thresh].tolist()
+
+    # Guarantee at least one feature (pick the best available)
+    if len(selected) == 0 and len(pv) > 0:
+        selected = [pv.idxmin()]
+    return selected
+
+
+def _select_features_pvalue(X_feat_by_sample: pd.DataFrame,
+                            y: pd.Series,
+                            feature_selector: str,
+                            p_value: float) -> list:
+    """Return a list of selected features given a p-value cutoff and selector."""
+    if feature_selector == 'anova':
+        selector = SelectKBest(score_func=f_regression, k='all')
+        selector.fit(X_feat_by_sample.T, y.values)
+        pv = pd.Series(selector.pvalues_, index=X_feat_by_sample.index, dtype=float)
+    else:
+        method = 'spearman' if feature_selector == 'spearman' else 'pearson'
+        pv = _pvalues_series(X_feat_by_sample, y, method)
+
+    pv = pv.replace([np.inf, -np.inf], 1.0).fillna(1.0)
+    selected = pv.index[pv.values <= p_value].tolist()
+
+    if len(selected) == 0 and len(pv) > 0:
+        selected = [pv.idxmin()]
+    return selected
+
+
+# -----------------------------
+# Feature selection (saved per LOO sample)
+# -----------------------------
+
+def feature_selection_percentile(X: pd.DataFrame,
+                                 y: pd.Series,
+                                 percentile: int = 10) -> pd.DataFrame:
+    """
+    For each LOO sample, select features using the remaining samples only (Pearson by default).
+    Returns a DataFrame indexed by sample with one column 'features' (list of feature names).
+
+    Parameters
+    ----------
+    X : DataFrame
+        Samples x Features (rows are samples, columns are features).
+    y : Series
+        Target aligned to X.index.
+    percentile : int
+        Percent of features to keep (lowest p-values / highest F-scores).
+    """
+    sample_list = X.index
+    records = []
+
+    for sample in sample_list:
+        X_train = X.drop(index=[sample])
+        y_train = y.drop(index=[sample])
+
+        # features x samples
+        X_train_fx = X_train.T
+        selected = _select_features_percentile(X_train_fx, y_train, 'pearson', percentile)
+        records.append({'LOO sample': sample, 'features': selected})
+
+    return pd.DataFrame.from_records(records).set_index('LOO sample')
+
+
+# -----------------------------
+# Cross-validation pipelines (ElasticNet only)
+# -----------------------------
+
+def cv_pipeline_fixed_percentile(model,
+                                 param_grid: dict,
+                                 X: pd.DataFrame,
+                                 y: pd.DataFrame,
+                                 protein_name: str,
+                                 feature_selector: str = 'pearson',
+                                 n_splits: int = 5,
+                                 n_samples=None,
+                                 percentile: int = 10) -> pd.DataFrame:
+    """
+    LOO CV for a single protein with a fixed percentile for feature selection.
+    Model: ElasticNet only. `model` is ignored unless it's an ElasticNet instance.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
-    
+
+    if (model is not None) and not isinstance(model, ElasticNet):
+        raise ValueError("Only ElasticNet is supported. Pass an ElasticNet instance or None.")
+
     y_protein = y[protein_name]
     sample_list = X.index if n_samples is None else X.index[:n_samples]
     X = X.loc[sample_list]
     y_protein = y_protein.loc[sample_list]
 
-    results = []  # Collect results in a list
+    results = []
 
-    keys, values = zip(*param_grid.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    keys, values = zip(*param_grid.items()) if len(param_grid) else ([], [])
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if len(keys) else [{}]
 
     for sample in sample_list:
         X_train = X.drop(index=[sample])
         X_test = X.loc[[sample]]
         y_train = y_protein.drop(index=[sample])
         y_test = y_protein.loc[[sample]]
-        
+
         columns_train = X_train.index
-        avg_mse = np.zeros(len(param_combinations))
-        
-        # Fix seed for KFold
+        avg_mse = np.zeros(len(param_combinations), dtype=float)
+
+        # Inner CV for hyperparameters
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-        
+
         for fit_idx, val_idx in kf.split(columns_train):
             fit_samples = columns_train[fit_idx]
             val_samples = columns_train[val_idx]
-            
-            X_fit = X_train.loc[fit_samples].T
+
+            X_fit = X_train.loc[fit_samples].T  # features x samples
             y_fit = y_train.loc[fit_samples]
             X_val = X_train.loc[val_samples].T
             y_val = y_train.loc[val_samples]
-            
-            # Feature selection based on the chosen method
-            if feature_selector == 'anova':
-                selector = SelectPercentile(score_func=f_regression, percentile=percentile)
-                selector.fit(X_fit.T, y_fit)
-                selected_features = X_fit.index[selector.get_support()]
-            elif feature_selector == 'spearman':
-                pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
-                selected_features = X_fit.index[pvalues <= np.percentile(pvalues, percentile)]
-            elif feature_selector == 'pearson':
-                pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
-                selected_features = X_fit.index[pvalues <= np.percentile(pvalues, percentile)]
-            
-            if not np.any(selected_features):
+
+            # Select features on the fold's training data
+            selected_features = _select_features_percentile(X_fit, y_fit, feature_selector, percentile)
+            if len(selected_features) == 0:
                 continue
-                
+
             X_fit_selected = X_fit.loc[selected_features]
             X_val_selected = X_val.loc[selected_features]
-            
-            # Evaluate each parameter combination
+
             for k_idx, params in enumerate(param_combinations):
-                # Fix seed for the model (if applicable)
-                estimator = model.__class__(max_iter=25, random_state=42)
-                estimator.set_params(**params)
-                
+                estimator = ElasticNet(max_iter=10000, random_state=42, **params)
                 try:
-                    estimator.fit(X_fit_selected.T, y_fit)
+                    estimator.fit(X_fit_selected.T, y_fit.values)
                     y_pred_val = estimator.predict(X_val_selected.T)
-                    mse = mean_squared_error(y_val, y_pred_val)
+                    mse = mean_squared_error(y_val.values, y_pred_val)
                     avg_mse[k_idx] += mse / n_splits
-                except:
+                except Exception:
                     avg_mse[k_idx] += 1e6 / n_splits
-        
-        # Select the best parameters based on the lowest MSE
-        min_mse_idx = np.argmin(avg_mse)
-        best_params = {**param_combinations[min_mse_idx], 
-                     'percentile': percentile,
-                     'feature_selector': feature_selector}
-        
+
+        # Best params
+        min_mse_idx = int(np.argmin(avg_mse)) if np.isfinite(avg_mse).any() else 0
+        best_params = {**param_combinations[min_mse_idx],
+                       'percentile': percentile,
+                       'feature_selector': feature_selector}
+
+        # Re-select features on the full training set (post inner-CV)
+        X_train_fx = X_train.T  # features x samples
+        selected_features = _select_features_percentile(X_train_fx, y_train, feature_selector, percentile)
+
+        # Final train and test
         features_coef = None
         y_pred = np.nan
-        
-        if np.any(selected_features):
-            X_train_selected = X_train.T.loc[selected_features]
-            # Fix seed for the final model (if applicable)
-            estimator = model.__class__(max_iter=25, random_state=42)
-            estimator.set_params(**param_combinations[min_mse_idx])
+
+        if len(selected_features) > 0:
+            X_train_selected = X_train_fx.loc[selected_features]
+            X_test_selected = X_test.T.loc[selected_features]
+
+            estimator = ElasticNet(max_iter=10000, random_state=42, **param_combinations[min_mse_idx])
             try:
-                estimator.fit(X_train_selected.T, y_train)
-                if hasattr(estimator, 'coef_'):
-                    features_coef = dict(zip(selected_features, estimator.coef_))
-                elif hasattr(estimator, 'feature_importances_'):
-                    features_coef = dict(zip(selected_features, estimator.feature_importances_))
-                
-                X_test_selected = X_test.T.loc[selected_features]
-                y_pred = estimator.predict(X_test_selected.T)
-            except:
+                estimator.fit(X_train_selected.T, y_train.values)
+                features_coef = dict(zip(selected_features, estimator.coef_.tolist()))
+                y_pred_arr = estimator.predict(X_test_selected.T)
+                y_pred = float(y_pred_arr[0])
+            except Exception:
                 y_pred = np.nan
 
-        # Store results in the list
         results.append({
             'protein': protein_name,
             'LOO sample': sample,
-            'true': y_test.values[0],
-            'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
+            'true': float(y_test.values[0]),
+            'predicted': y_pred,
             'params_dict': best_params,
             'features_coef_dict': features_coef,
             'percentile': percentile
         })
 
-    return pd.DataFrame(results)  # Convert list to DataFrame once
+    return pd.DataFrame(results)
 
-def cv_pipeline_variable_p(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, p_values=None):
+
+def cv_pipeline_fixed_p(model,
+                        param_grid: dict,
+                        X: pd.DataFrame,
+                        y: pd.DataFrame,
+                        protein_name: str,
+                        feature_selector: str = 'pearson',
+                        n_splits: int = 5,
+                        n_samples=None,
+                        p_value: float = 0.05) -> pd.DataFrame:
     """
-    Perform leave-one-out (LOO) cross-validation for a single protein with variable p-values for feature selection.
+    LOO CV for a single protein with a fixed p-value cutoff for feature selection.
+    Model: ElasticNet only. `model` is ignored unless it's an ElasticNet instance.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
-    
-    if p_values is None:
-        p_values = [0.1, 0.05, 0.01]
-    
-    y_protein = y[protein_name]
-    sample_list = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_list]
-    y_protein = y_protein.loc[sample_list]
-    
-    results = []  # Collect results in a list
-    
-    keys, values = zip(*param_grid.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    
-    for sample in sample_list:
-        X_train = X.drop(index=[sample])
-        X_test = X.loc[[sample]]
-        y_train = y_protein.drop(index=[sample])
-        y_test = y_protein.loc[[sample]]
-        
-        for p_value in p_values:
-            kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-            avg_mse = np.zeros(len(param_combinations))
-            best_features = None
-            
-            for fit_idx, val_idx in kf.split(X_train):
-                X_fit, X_val = X_train.iloc[fit_idx], X_train.iloc[val_idx]
-                y_fit, y_val = y_train.iloc[fit_idx], y_train.iloc[val_idx]
-                
-                # Feature selection based on the chosen method
-                if feature_selector == 'anova':
-                    selector = SelectKBest(score_func=f_regression, k='all')
-                    selector.fit(X_fit, y_fit)
-                    pvalues = selector.pvalues_
-                elif feature_selector == 'spearman':
-                    pvalues = np.array([spearmanr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
-                elif feature_selector == 'pearson':
-                    pvalues = np.array([pearsonr(X_fit.iloc[:, i], y_fit)[1] for i in range(X_fit.shape[1])])
-                
-                mask = pvalues <= p_value
-                if not np.any(mask):
-                    continue
-                
-                selected_features = X_train.columns[mask]
-                
-                # Evaluate each parameter combination
-                for k_idx, params in enumerate(param_combinations):
-                    estimator = model.__class__(max_iter=25)
-                    estimator.set_params(**params)
-                    try:
-                        estimator.fit(X_fit[selected_features], y_fit)
-                        y_pred_val = estimator.predict(X_val[selected_features])
-                        mse = mean_squared_error(y_val, y_pred_val)
-                        avg_mse[k_idx] += mse / n_splits
-                    except:
-                        avg_mse[k_idx] += 1e6 / n_splits
-            
-            # Select the best parameters based on the lowest MSE
-            min_mse_idx = np.argmin(avg_mse)
-            best_params = {**param_combinations[min_mse_idx], 'p_value': p_value, 'feature_selector': feature_selector}
-            
-            if best_features is None:
-                best_features = selected_features
-            
-            X_train_selected = X_train[best_features]
-            estimator = model.__class__(max_iter=25)
-            estimator.set_params(**param_combinations[min_mse_idx])
-            
-            features_coef = None
-            y_pred = np.nan
-            
-            try:
-                estimator.fit(X_train_selected, y_train)
-                if hasattr(estimator, 'coef_'):
-                    features_coef = dict(zip(best_features, estimator.coef_))
-                elif hasattr(estimator, 'feature_importances_'):
-                    features_coef = dict(zip(best_features, estimator.feature_importances_))
-                
-                X_test_selected = X_test[best_features]
-                y_pred = estimator.predict(X_test_selected)
-            except:
-                y_pred = np.nan
-            
-            # Store results in the list
-            results.append({
-                'protein': protein_name,
-                'LOO sample': sample,
-                'true': y_test.values[0],
-                'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-                'params_dict': best_params,
-                'features_coef_dict': features_coef,
-                'p_value': p_value
-            })
-    
-    return pd.DataFrame(results)  # Convert list to DataFrame once
 
-def cv_pipeline_fixed_p(model, param_grid, X, y, protein_name, feature_selector='pearson', n_splits=5, n_samples=None, p_value=0.05):
-    """
-    Perform leave-one-out (LOO) cross-validation for a single protein with a fixed p-value for feature selection.
-    """
-    if protein_name not in y.columns:
-        raise ValueError(f"Protein {protein_name} not found in y columns.")
-    
+    if (model is not None) and not isinstance(model, ElasticNet):
+        raise ValueError("Only ElasticNet is supported. Pass an ElasticNet instance or None.")
+
     y_protein = y[protein_name]
     sample_list = X.index if n_samples is None else X.index[:n_samples]
     X = X.loc[sample_list]
     y_protein = y_protein.loc[sample_list]
 
-    results = []  # Collect results in a list
+    results = []
 
-    keys, values = zip(*param_grid.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    keys, values = zip(*param_grid.items()) if len(param_grid) else ([], [])
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if len(keys) else [{}]
 
     for sample in sample_list:
         X_train = X.drop(index=[sample])
         X_test = X.loc[[sample]]
         y_train = y_protein.drop(index=[sample])
         y_test = y_protein.loc[[sample]]
-        
+
         columns_train = X_train.index
-        avg_mse = np.zeros(len(param_combinations))
-        
+        avg_mse = np.zeros(len(param_combinations), dtype=float)
+
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-        
+
         for fit_idx, val_idx in kf.split(columns_train):
             fit_samples = columns_train[fit_idx]
             val_samples = columns_train[val_idx]
-            
-            X_fit = X_train.loc[fit_samples].T
+
+            X_fit = X_train.loc[fit_samples].T  # features x samples
             y_fit = y_train.loc[fit_samples]
             X_val = X_train.loc[val_samples].T
             y_val = y_train.loc[val_samples]
-            
-            # Feature selection based on the chosen method
-            if feature_selector == 'anova':
-                selector = SelectKBest(score_func=f_regression, k='all')
-                selector.fit(X_fit.T, y_fit)
-                pvalues = selector.pvalues_
-            elif feature_selector == 'spearman':
-                pvalues = np.array([spearmanr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
-            elif feature_selector == 'pearson':
-                pvalues = np.array([pearsonr(X_fit.loc[i], y_fit)[1] for i in X_fit.index])
-            
-            mask = pvalues <= p_value
-            
-            if not np.any(mask):
+
+            selected_features = _select_features_pvalue(X_fit, y_fit, feature_selector, p_value)
+            if len(selected_features) == 0:
                 continue
-                
-            X_fit_selected = X_fit.loc[mask]
-            X_val_selected = X_val.loc[mask]
-            
-            # Evaluate each parameter combination
+
+            X_fit_selected = X_fit.loc[selected_features]
+            X_val_selected = X_val.loc[selected_features]
+
             for k_idx, params in enumerate(param_combinations):
-                estimator = model.__class__(max_iter=25)
-                estimator.set_params(**params)
-                
+                estimator = ElasticNet(max_iter=10000, random_state=42, **params)
                 try:
-                    estimator.fit(X_fit_selected.T, y_fit)
+                    estimator.fit(X_fit_selected.T, y_fit.values)
                     y_pred_val = estimator.predict(X_val_selected.T)
-                    mse = mean_squared_error(y_val, y_pred_val)
+                    mse = mean_squared_error(y_val.values, y_pred_val)
                     avg_mse[k_idx] += mse / n_splits
-                except:
+                except Exception:
                     avg_mse[k_idx] += 1e6 / n_splits
-        
-        # Select the best parameters based on the lowest MSE
-        min_mse_idx = np.argmin(avg_mse)
-        best_params = {**param_combinations[min_mse_idx], 
-                     'p_value': p_value,
-                     'feature_selector': feature_selector}
-        
-        selected_features = X_train.T.index[pvalues <= p_value]
-        
+
+        min_mse_idx = int(np.argmin(avg_mse)) if np.isfinite(avg_mse).any() else 0
+        best_params = {**param_combinations[min_mse_idx],
+                       'p_value': p_value,
+                       'feature_selector': feature_selector}
+
+        # Re-select features on the full training set
+        X_train_fx = X_train.T
+        selected_features = _select_features_pvalue(X_train_fx, y_train, feature_selector, p_value)
+
         features_coef = None
         y_pred = np.nan
-        
-        if np.any(selected_features):
-            X_train_selected = X_train.T.loc[selected_features]
-            estimator = model.__class__(max_iter=25)
-            estimator.set_params(**param_combinations[min_mse_idx])
+
+        if len(selected_features) > 0:
+            X_train_selected = X_train_fx.loc[selected_features]
+            X_test_selected = X_test.T.loc[selected_features]
+
+            estimator = ElasticNet(max_iter=10000, random_state=42, **param_combinations[min_mse_idx])
             try:
-                estimator.fit(X_train_selected.T, y_train)
-                if hasattr(estimator, 'coef_'):
-                    features_coef = dict(zip(selected_features, estimator.coef_))
-                elif hasattr(estimator, 'feature_importances_'):
-                    features_coef = dict(zip(selected_features, estimator.feature_importances_))
-                
-                X_test_selected = X_test.T.loc[selected_features]
-                y_pred = estimator.predict(X_test_selected.T)
-            except:
+                estimator.fit(X_train_selected.T, y_train.values)
+                features_coef = dict(zip(selected_features, estimator.coef_.tolist()))
+                y_pred_arr = estimator.predict(X_test_selected.T)
+                y_pred = float(y_pred_arr[0])
+            except Exception:
                 y_pred = np.nan
 
-        # Store results in the list
         results.append({
             'protein': protein_name,
             'LOO sample': sample,
-            'true': y_test.values[0],
-            'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
+            'true': float(y_test.values[0]),
+            'predicted': y_pred,
             'params_dict': best_params,
             'features_coef_dict': features_coef,
             'p_value': p_value
         })
 
-    return pd.DataFrame(results)  # Convert list to DataFrame once
+    return pd.DataFrame(results)
 
 
-def cv_pipeline_fixed_features(model, param_grid:dict, X, y, protein_name:str, features, n_splits:int=5, n_samples=None):
+def cv_pipeline_fixed_features(model,
+                               param_grid: dict,
+                               X: pd.DataFrame,
+                               y: pd.DataFrame,
+                               protein_name: str,
+                               features: pd.DataFrame,
+                               n_splits: int = 5,
+                               n_samples=None) -> pd.DataFrame:
     """
-    Perform leave-one-out (LOO) cross-validation for a single protein with a fixed set of features for each sample.
+    LOO CV for a single protein with a fixed set of features (provided per sample).
+    `features` must be a DataFrame indexed by sample with a column 'features' (list of feature names).
+    Model: ElasticNet only. `model` is ignored unless it's an ElasticNet instance.
     """
-
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
+
+    if (model is not None) and not isinstance(model, ElasticNet):
+        raise ValueError("Only ElasticNet is supported. Pass an ElasticNet instance or None.")
+
+    if 'features' not in features.columns:
+        raise ValueError("`features` DataFrame must contain a 'features' column with lists of feature names per sample.")
 
     y_protein = y[protein_name]
     sample_list = X.index if n_samples is None else X.index[:n_samples]
     X = X.loc[sample_list]
     y_protein = y_protein.loc[sample_list]
 
-    results = []  # Collect results in a list
+    results = []
 
-    keys, values = zip(*param_grid.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+    keys, values = zip(*param_grid.items()) if len(param_grid) else ([], [])
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if len(keys) else [{}]
 
     for sample in sample_list:
         X_train = X.drop(index=[sample])
         X_test = X.loc[[sample]]
         y_train = y_protein.drop(index=[sample])
         y_test = y_protein.loc[[sample]]
-        
+
         columns_train = X_train.index
-        avg_mse = np.zeros(len(param_combinations))
-        
-        # Fix seed for KFold
+        avg_mse = np.zeros(len(param_combinations), dtype=float)
+
+        # features for this LOO sample
+        selected_features = features.loc[sample, 'features']
+        if not isinstance(selected_features, (list, tuple, np.ndarray)):
+            raise ValueError("Each entry in `features['features']` must be a list/tuple/array of feature names.")
+
+        # Inner CV for hyperparameters
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-        # Get features for protein-sample pair
-        selected_features = features.loc[sample][0]
-        
         for fit_idx, val_idx in kf.split(columns_train):
             fit_samples = columns_train[fit_idx]
             val_samples = columns_train[val_idx]
-            
-            X_fit = X_train.loc[fit_samples].T
+
+            X_fit = X_train.loc[fit_samples].T  # features x samples
             y_fit = y_train.loc[fit_samples]
             X_val = X_train.loc[val_samples].T
             y_val = y_train.loc[val_samples]
 
-            if not np.any(selected_features):
+            if len(selected_features) == 0:
                 continue
-                
-            X_fit_selected = X_fit.loc[selected_features]
-            X_val_selected = X_val.loc[selected_features]
-            
-            # Evaluate each parameter combination
-            for k_idx, params in enumerate(param_combinations):
-                # Fix seed for the model (if applicable)
-                estimator = model.__class__(max_iter=25, random_state=42)
-                estimator.set_params(**params)
-                
-                try:
-                    estimator.fit(X_fit_selected.T, y_fit)
-                    y_pred_val = estimator.predict(X_val_selected.T)
-                    mse = mean_squared_error(y_val, y_pred_val)
-                    avg_mse[k_idx] += mse / n_splits
-                except:
-                    avg_mse[k_idx] += 1e6 / n_splits
-        
-        # Select the best parameters based on the lowest MSE
-        min_mse_idx = np.argmin(avg_mse)
-        best_params = {**param_combinations[min_mse_idx]}
-        
-        features_coef = None
-        y_pred = np.nan
-        
-        if np.any(selected_features):
-            X_train_selected = X_train.T.loc[selected_features]
-            # Fix seed for the final model (if applicable)
-            estimator = model.__class__(max_iter=25, random_state=42)
-            estimator.set_params(**param_combinations[min_mse_idx])
-            try:
-                estimator.fit(X_train_selected.T, y_train)
-                if hasattr(estimator, 'coef_'):
-                    features_coef = dict(zip(selected_features, estimator.coef_))
-                elif hasattr(estimator, 'feature_importances_'):
-                    features_coef = dict(zip(selected_features, estimator.feature_importances_))
-                
-                X_test_selected = X_test.T.loc[selected_features]
-                y_pred = estimator.predict(X_test_selected.T)
-            except:
-                y_pred = np.nan
 
-        # Store results in the list
+            # Align to available features
+            sel = [f for f in selected_features if f in X_fit.index]
+            if len(sel) == 0:
+                continue
+
+            X_fit_selected = X_fit.loc[sel]
+            X_val_selected = X_val.loc[sel]
+
+            for k_idx, params in enumerate(param_combinations):
+                estimator = ElasticNet(max_iter=10000, random_state=42, **params)
+                try:
+                    estimator.fit(X_fit_selected.T, y_fit.values)
+                    y_pred_val = estimator.predict(X_val_selected.T)
+                    mse = mean_squared_error(y_val.values, y_pred_val)
+                    avg_mse[k_idx] += mse / n_splits
+                except Exception:
+                    avg_mse[k_idx] += 1e6 / n_splits
+
+        min_mse_idx = int(np.argmin(avg_mse)) if np.isfinite(avg_mse).any() else 0
+        best_params = {**param_combinations[min_mse_idx]}
+
+        # Final train/test
+        y_pred = np.nan
+        features_coef = None
+
+        if len(selected_features) > 0:
+            X_train_fx = X_train.T
+            sel = [f for f in selected_features if f in X_train_fx.index]
+            if len(sel) > 0:
+                X_train_selected = X_train_fx.loc[sel]
+                X_test_selected = X_test.T.loc[sel]
+                estimator = ElasticNet(max_iter=10000, random_state=42, **param_combinations[min_mse_idx])
+                try:
+                    estimator.fit(X_train_selected.T, y_train.values)
+                    features_coef = dict(zip(sel, estimator.coef_.tolist()))
+                    y_pred_arr = estimator.predict(X_test_selected.T)
+                    y_pred = float(y_pred_arr[0])
+                except Exception:
+                    y_pred = np.nan
+
         results.append({
             'protein': protein_name,
             'LOO sample': sample,
-            'true': y_test.values[0],
-            'predicted': y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred,
-            'params_dict': best_params #,
-            #'features_coef_dict': features_coef
+            'true': float(y_test.values[0]),
+            'predicted': y_pred,
+            'params_dict': best_params,
+            'features_coef_dict': features_coef
         })
 
-    return pd.DataFrame(results)  # Convert list to DataFrame once
+    return pd.DataFrame(results)

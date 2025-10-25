@@ -5,8 +5,7 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import ElasticNet
 from joblib import load, dump
-import xgboost as xgb
-from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_variable_p, cv_pipeline_fixed_p, cv_pipeline_fixed_features
+from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_fixed_p, cv_pipeline_fixed_features
 
 # Utility function to select the pipeline
 def select_pipeline(pipeline_name, model_type):
@@ -15,13 +14,12 @@ def select_pipeline(pipeline_name, model_type):
     """
     pipelines = {
         'fixed_percentile': cv_pipeline_fixed_percentile,  # Pipeline with fixed percentile
-        'variable_p': cv_pipeline_variable_p,              # Pipeline with variable p-values
         'fixed_p': cv_pipeline_fixed_p,                    # Pipeline with fixed p-value
         'fixed_features': cv_pipeline_fixed_features       # Pipeline with fixed features
     }
 
     if pipeline_name not in pipelines:
-        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'fixed_percentile', 'variable_p', or 'fixed_p'.")
+        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'fixed_percentile', 'fixed_p', or 'fixed_features'.")
     
     if model_type not in ['elasticnet', 'xgboost']:
         raise ValueError(f"Invalid model type: {model_type}. Choose from 'elasticnet' or 'xgboost'.")
@@ -72,17 +70,6 @@ if model_type == 'elasticnet':
         'alpha': [0.1, 0.5, 1, 10],   # Regularization strengths
         'l1_ratio': [0.1, 0.5, 0.9],  # Mix of L1 and L2
     }
-elif model_type == 'xgboost':
-    model = xgb.XGBRegressor()
-    param_grid = {
-        'max_depth': [3, 6, 9],
-        'learning_rate': [0.01, 0.1, 0.3],
-        'n_estimators': [100, 200],
-        'subsample': [0.8, 1.0],
-        'colsample_bytree': [0.8, 1.0],
-        'tree_method': ['gpu_hist'],
-        'gpu_id': [0]
-    }
 
 n_splits = 5
 
@@ -102,17 +89,6 @@ try:
             feature_selector='pearson',
             n_splits=n_splits,
             percentile=5  # Fixed percentile
-        )
-    elif pipeline_name == 'variable_p':
-        results_df = pipeline(
-            model=model,
-            param_grid=param_grid,
-            X=transcriptomics,
-            y=proteomics,
-            protein_name=protein_name,
-            feature_selector='pearson',
-            n_splits=n_splits,
-            p_values=[0.1, 0.05, 0.01]  # Variable p-values
         )
     elif pipeline_name == 'fixed_p':
         results_df = pipeline(
