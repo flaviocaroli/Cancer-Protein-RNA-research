@@ -20,10 +20,10 @@ ARRAY_LIMIT=${ARRAY_LIMIT:-}     # e.g. 16 → "--array=1-N%16"
 
 # Pipeline knobs (forwarded to pipeline.py)
 SPLITS=${SPLITS:-3}
-SELECT_K=${SELECT_K:-500}        # 0 = no Spearman prefilter (keep all features)
-EARLY_STOPPING=${EARLY_STOPPING:-50}
+SELECT_K=${SELECT_K:-0}        # 0 = no Spearman prefilter (keep all features)
+EARLY_STOPPING=${EARLY_STOPPING:-100}
 MAX_PARAM_COMBOS=${MAX_PARAM_COMBOS:-12}
-MINIMAL_SAVE=${MINIMAL_SAVE:-0}  # 1 = pass --minimal_save
+MINIMAL_SAVE=${MINIMAL_SAVE:-1}  # 1 = pass --minimal_save
 N_SAMPLES=${N_SAMPLES:-}         # leave empty to use all samples
 NO_FEATURE_SELECTION=${NO_FEATURE_SELECTION:-0}  # 1 = pass --no_feature_selection
 RESUME_SKIP=${RESUME_SKIP:-1}    # 1 = skip proteins with existing outputs

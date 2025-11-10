@@ -2,22 +2,23 @@
 
 
 ## Files
-This folder contains three analysis notebooks. Run them **in order** (01 → 02 → 03).  
-Filenames are kept as-is (typos in names are intentional to match the originals).
+This folder contains a computation folder and three analysis notebooks. In order to get data to use in notebook please run computation/corr_script.py or use the run_corr.sh shell script in an external cluster; corr_test.ipynb is a controllable test script for small data.
+
+Once full_correlations are computed and saved to disk, the three notebooks can be used to analyze the results.
+Run notebooks **in order** (01 → 02 → 03).  
 
 ### 01. pearson_anlaysis.ipynb
-- **What it does:** Computes pairwise **Pearson correlations** and basic stats.
-- **Typical outputs:** Correlation matrix (CSV/Parquet), ranked pairs, and a heatmap (optionally clustered).
-- **Use cases:** Spot multicollinearity, identify strongly related features/samples.
+- **What it does:** Analyzes pairwise **Pearson correlations** between each protein and each feature, 
+along with basic stats, clustering of the correlation matrix.
+- **Outputs:** Correlation matrix CSV, ranked pairs, clusters and a heatmap.
 
 ### 02. cluster_anlaysis.ipynb
-- **What it does:** Performs **unsupervised clustering** (e.g., hierarchical / k-means) on the selected feature/correlation space.
-- **Typical outputs:** Cluster labels, dendrogram or elbow/silhouette diagnostics, and 2D projections (PCA/UMAP) for visualization.
-- **Use cases:** Choose a sensible number of clusters and inspect cluster structure/quality.
+- **What it does:** Analyzes **unsupervised clustering** hierarchical and k-means on the selected feature/correlation space.
+- **Outputs:** Cluster labels, dendrogram or elbow/silhouette diagnostics, and 2D projections (PCA/UMAP) for visualization.
 
 ### 03. prot_clustering.ipynb
-- **What it does:** **Protein-level clustering** and grouping based on similarity/correlation (may include graph-based views).
-- **Typical outputs:** Protein clusters/groups as tables, summary plots (heatmaps/network), and export of selected clusters.
+- **What it does:** **Protein-level clustering** and grouping based on similarity/correlation and includes graph-based views.
+- **Outputs:** Protein clusters/groups as tables, summary plots (heatmaps/network), and export of selected clusters.
 ---
 
 ### Quick start

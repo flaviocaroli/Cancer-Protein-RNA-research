@@ -149,7 +149,7 @@ def cv_pipeline_loo(
     select_k: int = 500,                  # number of features to keep via Spearman prefilter
     preselect_k: Optional[int] = 5000,    # ignored; kept for compatibility
     early_stopping_rounds: int = 50,
-    minimal_save: bool = False,
+    minimal_save: bool = True,
     max_param_combos: Optional[int] = None,
     use_gpu: bool = False,                # set True to use GPU
 ) -> pd.DataFrame:
