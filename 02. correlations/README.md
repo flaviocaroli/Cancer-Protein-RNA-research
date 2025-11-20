@@ -14,7 +14,7 @@ along with basic stats, clustering of the correlation matrix.
 
 ### 02. cluster_anlaysis.ipynb
 - **What it does:** Analyzes **unsupervised clustering** hierarchical and k-means on the selected feature/correlation space.
-- **Outputs:** Cluster labels, dendrogram or elbow/silhouette diagnostics, and 2D projections (PCA/UMAP) for visualization.
+- **Outputs:** Cluster labels, dendrogram or elbow/silhouette diagnostics, and 2D projections PCA for visualization.
 
 ### 03. prot_clustering.ipynb
 - **What it does:** **Protein-level clustering** and grouping based on similarity/correlation and includes graph-based views.
@@ -33,7 +33,7 @@ along with basic stats, clustering of the correlation matrix.
 ```
 .
 ├─ 01. pearson_anlaysis.ipynb
-├─ 02. cluster_anlaysis.ipynb
-├─ 03. prot_clustering.ipynb
+├─ 02. prot_clustering.ipynb
+├─ 03. cluster_anlaysis.ipynb
 └─ README.md
 ```

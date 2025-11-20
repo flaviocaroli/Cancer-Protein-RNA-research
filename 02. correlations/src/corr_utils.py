@@ -151,12 +151,12 @@ def visualize_all_consensus_matrices(consensus_matrices):
     for k_idx, consensus in enumerate(consensus_matrices):
         k = k_idx + 2  # k starts at 2
         plot_consensus_matrix(consensus, k)
-        plt.savefig(f'consensus_matrix_k{k}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'results/clusters_pg/consensus_matrix_k{k}.png', dpi=300, bbox_inches='tight')
         plt.close()
     
     # Plot CDFs
     plot_consensus_cdf(consensus_matrices)
-    plt.savefig('consensus_cdf.png', dpi=300, bbox_inches='tight')
+    plt.savefig('results/clusters_pg/consensus_cdf.png', dpi=300, bbox_inches='tight')
     plt.close()
     
     # Calculate and plot stability metrics
@@ -170,7 +170,7 @@ def visualize_all_consensus_matrices(consensus_matrices):
     plt.title('Proportion of Ambiguous Clustering (lower is better)')
     plt.grid(True, alpha=0.3)
     plt.xticks(metrics['k'])
-    plt.savefig('pac_values.png', dpi=300, bbox_inches='tight')
+    plt.savefig('results/clusters_pg/pac_values.png', dpi=300, bbox_inches='tight')
     plt.close()
     
     # Print metrics table
