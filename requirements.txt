@@ -1,9 +1,14 @@
-numpy
-pandas
-scikit-learn
-joblib
-argparse
-matplotlib
-seaborn
-scipy
--c conda-forge xgboost-gpu
+pandas==2.3.2
+numpy==1.24.4
+seaborn==0.12.2
+matplotlib==3.7.2
+scikit-learn==1.7.2
+scipy==1.11.1
+joblib==1.2.0
+networkx==3.1
+jupyterlab>=4.0
+ipykernel>=6.25
+tables>=3.8
+h5py>=3.8
+numexpr>=2.8.4
+ipython>=8.15.0
