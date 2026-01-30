@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os  # Added os to handle paths dynamically
 from sklearn.feature_selection import f_regression
 from scipy.stats import pearsonr, spearmanr
 from typing import Dict, Optional, Sequence
@@ -11,8 +12,71 @@ MAX_FEATURES: Dict[int, int] = {
     3: 6700,
 }
 
+# --- FIX: Load clusters using an absolute path relative to this script ---
+# This prevents FileNotFoundError when importing this module from other folders.
+current_dir = os.path.dirname(os.path.abspath(__file__))
+clusters_path = os.path.join(current_dir, "data", "protein_clusters_k3.csv")
 
-clusters = pd.read_csv("protein_clusters_k3.csv").set_index("Protein")['Cluster']
+if os.path.exists(clusters_path):
+    clusters = pd.read_csv(clusters_path).set_index("Protein")['Cluster']
+else:
+    # Fallback or empty if file is missing (prevents crash on import, allows debugging)
+    print(f"Warning: {clusters_path} not found.")
+    clusters = pd.Series(dtype=int)
+
+
+def feature_selection_anova_only(X, y, protein_name, percentile=5, n_samples=None):
+    """
+    Perform leave-one-out (LOO) feature selection for a single protein using ONLY ANOVA.
+    
+    For each left-out sample, the training set is used to compute:
+      - 'anova': Uses f_regression to obtain F scores and p-values.
+      
+    The threshold is defined as the given percentile of the p-values computed over the training set.
+    Only features with p-values below or equal to that threshold are selected.
+
+    Returns:
+        pd.DataFrame: A DataFrame indexed by the left-out sample with a single column 'anova'.
+    """
+    if protein_name not in y.columns:
+        raise ValueError(f"Protein {protein_name} not found in y columns.")
+    
+    y_protein = y[protein_name]
+    sample_list = X.index if n_samples is None else X.index[:n_samples]
+    X = X.loc[sample_list]
+    y_protein = y_protein.loc[sample_list]
+    
+    results = []
+
+    # Loop over each sample to leave out one at a time
+    for sample in sample_list:
+        # Define training set (all samples except the one left out)
+        X_train = X.drop(index=[sample])
+        y_train = y_protein.drop(index=[sample])
+        
+        features = X_train.columns
+        
+        # --- ANOVA Feature Selection ONLY ---
+        # f_regression returns F scores and p-values.
+        F_scores, pvals_anova = f_regression(X_train, y_train)
+        
+        # Calculate threshold based on percentile
+        threshold_anova = np.percentile(pvals_anova, percentile)
+        
+        # Select features where p-value is <= threshold
+        selected_anova = {feat: F_scores[i] 
+                          for i, feat in enumerate(features) 
+                          if pvals_anova[i] <= threshold_anova}
+        
+        # Append only the ANOVA results
+        results.append({
+            'LOO_sample': sample,
+            'anova': selected_anova
+        })
+    
+    # Create DataFrame with left-out sample as index
+    results_df = pd.DataFrame(results).set_index('LOO_sample')
+    return results_df
 
 
 def feature_selection(X, y, protein_name, percentile=5, n_samples=None):
@@ -124,87 +188,81 @@ def naive_cluster_feature_selection_indices(
     n_samples: Optional[int] = None,
 ) -> dict:
     """
-    Naive, cluster-aware LOO feature selection that returns a **compact** index layout.
-
-    For each left-out sample:
-      - Compute Pearson r between y_protein(train) and each gene X(train, j)
-      - Keep top-N genes, where N depends on the protein's cluster:
-            N = MAX_FEATURES[ clusters[protein_name] ]
-      - Store only the global **gene indices** (not strings) for memory efficiency.
-
-    Returns a dict suitable for np.savez_compressed:
-        {
-          "samples": np.ndarray[str]     # sample ids in order
-          "indptr":  np.ndarray[uint32]  # CSR pointers (len = n_samples + 1)
-          "indices": np.ndarray[uint32]  # concatenated selected gene indices
-          "n_genes": int                 # total gene count (len(X.columns))
-        }
+    Highly optimized LOO feature selection using vectorized ANOVA.
+    
+    OPTIMIZATION NOTES:
+    - Replaced slow 'pearsonr' loop with sklearn's 'f_regression'.
+    - f_regression is vectorized (calculates all genes at once).
+    - It ranks features identically to Pearson correlation |r|.
     """
     if protein_name not in y.columns:
         raise ValueError(f"Protein {protein_name} not found in y columns.")
 
-    # Resolve cluster and cap
-    clusters = _load_clusters_map(clusters_csv_path)
-    if protein_name not in clusters.index:
-        raise ValueError(
-            f"Protein {protein_name} not present in clusters file: {clusters_csv_path}"
-        )
-    cluster_id = int(clusters.loc[protein_name])
+    # 1. Resolve cluster and N features
+    clusters_map = _load_clusters_map(clusters_csv_path)
+    if protein_name not in clusters_map.index:
+        raise ValueError(f"Protein {protein_name} not present in clusters file.")
+    
+    cluster_id = int(clusters_map.loc[protein_name])
     if cluster_id not in MAX_FEATURES:
-        raise ValueError(
-            f"Cluster id {cluster_id} for {protein_name} not in MAX_FEATURES mapping."
-        )
+        raise ValueError(f"Cluster id {cluster_id} not in MAX_FEATURES.")
+        
     keep_top = int(MAX_FEATURES[cluster_id])
 
-    # Restrict to a subset of samples if requested (keeps order)
+    # 2. Prepare Data (Slicing)
     sample_idx = X.index if n_samples is None else X.index[:n_samples]
-    X = X.loc[sample_idx]
-    y_protein = y.loc[sample_idx, protein_name]
+    X_subset = X.loc[sample_idx]
+    y_subset = y.loc[sample_idx, protein_name]
 
-    n_genes = X.shape[1]
+    # Convert to numpy arrays ONCE to avoid DataFrame overhead inside loop
+    X_values = X_subset.values  # shape: (n_samples, n_genes)
+    y_values = y_subset.values  # shape: (n_samples,)
+    
+    n_genes = X_values.shape[1]
     samples: Sequence[str] = list(sample_idx)
-    genes_list: Sequence[str] = list(X.columns)
-    gene_to_idx = {g: i for i, g in enumerate(genes_list)}
 
-    # Output buffers (CSR format)
+    # 3. Output buffers
     indptr = [0]
-    indices: list[int] = []
+    indices = []
 
-    # LOO over samples
-    for s in samples:
-        X_train = X.drop(index=[s])
-        y_train = y_protein.drop(index=[s])
+    # 4. Optimized LOO Loop
+    # We loop over indices (i) to mask rows using boolean indexing or slicing
+    n_rows = X_values.shape[0]
+    
+    for i in range(n_rows):
+        # Create a boolean mask to select everything EXCEPT the current sample i
+        # This is faster than dropping rows with pandas
+        mask = np.ones(n_rows, dtype=bool)
+        mask[i] = False
+        
+        X_train = X_values[mask]
+        y_train = y_values[mask]
 
-        # Compute Pearson r for each gene; collect as (idx, r)
-        # NOTE: leave as a simple loop for clarity; vectorization is possible but not required here.
-        r_vals = np.empty(n_genes, dtype=np.float32)
-        xvals = X_train.values  # (n_train, n_genes)
-        yvals = y_train.values  # (n_train,)
+        # --- SPEED OPTIMIZATION HERE ---
+        # Instead of looping 20,000 times with pearsonr, we run ONE f_regression call.
+        # f_regression returns (F-scores, p-values). Higher F-score == Stronger Correlation.
+        f_scores, _ = f_regression(X_train, y_train)
+        
+        # Handle potential NaNs (e.g. constant features) by setting them to -1
+        np.nan_to_num(f_scores, copy=False, nan=-1.0)
 
-        # Avoid repeated .values in loop
-        for j, col in enumerate(genes_list):
-            # pearsonr returns (r, p); handle NaNs by setting r = -inf so they sink
-            try:
-                r, _ = pearsonr(xvals[:, j], yvals)
-                if np.isnan(r):
-                    r = -np.inf
-            except Exception:
-                r = -np.inf
-            r_vals[j] = r
-
-        # Select top-N by r (descending). Use argpartition for speed.
-        # Bound keep_top to n_genes to be safe.
+        # Select top-N indices efficiently
         k = min(keep_top, n_genes)
         if k <= 0:
             chosen_idx = np.empty(0, dtype=np.int64)
         else:
-            # largest k -> partition at n-k, then sort that slice descending
-            part = np.argpartition(r_vals, n_genes - k)[n_genes - k:]
-            # sort those by r descending to get stable order (optional)
-            chosen_idx = part[np.argsort(r_vals[part])[::-1]]
+            # np.argpartition puts the top K elements at the end of the array (unsorted)
+            # This is O(n), much faster than full sort O(n log n)
+            part_indices = np.argpartition(f_scores, n_genes - k)[n_genes - k:]
+            
+            # Optional: Sort these top K to have them in descending order of importance
+            # (If order doesn't matter for your downstream task, you can skip this sort)
+            top_scores = f_scores[part_indices]
+            sorted_order = np.argsort(top_scores)[::-1]
+            chosen_idx = part_indices[sorted_order]
 
-        # Record global gene indices
-        indices.extend(int(j) for j in chosen_idx)
+        # Append to efficient list
+        indices.extend(chosen_idx)
         indptr.append(len(indices))
 
     return {

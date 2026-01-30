@@ -31,7 +31,7 @@ def main():
         print(f"ERROR: data_dir not found: {data_dir}")
         sys.exit(1)
 
-    X_path = os.path.join(data_dir, "transcriptomics_kde_filtered.joblib")
+    X_path = os.path.join(data_dir, "transcriptomics_filtered.joblib")
     Y_path = os.path.join(data_dir, "proteomics_matched.joblib")
     clusters_csv = os.path.join(data_dir, "protein_clusters_k3.csv")
 
