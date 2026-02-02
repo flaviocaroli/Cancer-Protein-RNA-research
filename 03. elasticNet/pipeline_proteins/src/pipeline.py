@@ -1,126 +1,172 @@
+# pipeline.py
 import os
 import sys
 import argparse
 import pandas as pd
-import numpy as np
-from sklearn.linear_model import ElasticNet
 from joblib import load, dump
-from pipeline_functions import cv_pipeline_fixed_percentile, cv_pipeline_fixed_p, cv_pipeline_fixed_features
 
-# Utility function to select the pipeline
-def select_pipeline(pipeline_name, model_type):
-    """
-    Selects the appropriate pipeline based on the input name and model type.
-    """
+from pipeline_functions import (
+    cv_pipeline_fixed_percentile,
+    cv_pipeline_fixed_p,
+    cv_union,
+)
+
+
+def select_pipeline(pipeline_name):
     pipelines = {
-        'fixed_percentile': cv_pipeline_fixed_percentile,  # Pipeline with fixed percentile
-        'fixed_p': cv_pipeline_fixed_p,                    # Pipeline with fixed p-value
-        'fixed_features': cv_pipeline_fixed_features       # Pipeline with fixed features
+        "fixed_percentile": cv_pipeline_fixed_percentile,
+        "fixed_p": cv_pipeline_fixed_p,
+        "union": cv_union,
     }
-
     if pipeline_name not in pipelines:
-        raise ValueError(f"Invalid pipeline name: {pipeline_name}. Choose from 'fixed_percentile', 'fixed_p', or 'fixed_features'.")
-    
-    if model_type not in ['elasticnet', 'xgboost']:
-        raise ValueError(f"Invalid model type: {model_type}. Choose from 'elasticnet' or 'xgboost'.")
-    
-    return pipelines[pipeline_name], model_type
+        raise ValueError("Invalid pipeline: {}".format(pipeline_name))
+    return pipelines[pipeline_name]
 
-# Parse command-line arguments
-parser = argparse.ArgumentParser(description='Run pipeline on a single protein (LOO for all samples).')
-parser.add_argument('--protein', type=str, required=True, help='Protein name')
-parser.add_argument('--pipeline', type=str, required=True, choices=['fixed_percentile', 'variable_p', 'fixed_p'],
-                    help="Pipeline type: 'fixed_percentile', 'variable_p' (variable p-values), or 'fixed_p' (fixed p-value)")
-parser.add_argument('--model', type=str, required=True, choices=['elasticnet', 'xgboost'],
-                    help="Model type: 'elasticnet' or 'xgboost'")
-args = parser.parse_args()
 
-protein_name = args.protein
-pipeline_name = args.pipeline
-model_type = args.model
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--protein", type=str, required=True)
+    parser.add_argument(
+        "--pipeline",
+        type=str,
+        default="fixed_percentile",
+        choices=["fixed_percentile", "fixed_p", "union"],
+        help="Which pipeline to run. Default: fixed_percentile",
+    )
+    parser.add_argument("--model", type=str, default="elasticnet")
 
-# Paths
-current_dir = os.path.dirname(os.path.abspath(__file__))
-data_dir = os.path.abspath(os.path.join(current_dir, "..", "data"))
-transcriptomics_file = os.path.join(data_dir, "transcriptomics_filtered.joblib")
-proteomics_file = os.path.join(data_dir, "proteomics_matched.joblib")
+    parser.add_argument(
+        "--full_output",
+        action="store_true",
+        help="If set, outputs full LOO results + consensus model + loo_stats. Otherwise saves only {protein}_best.parquet.",
+    )
 
-# Load data
-print("Loading data...")
-try:
-    transcriptomics = load(transcriptomics_file)  # samples x features
-    proteomics = load(proteomics_file)            # samples x proteins
-    transcriptomics.index.name = "samples"
-    proteomics.index.name = "samples"
-    proteomics.columns.name = "proteins"
-    transcriptomics.columns.name = "genes"
-except Exception as e:
-    print(f"Error loading data: {e}")
-    sys.exit(1)
+    # Optional knobs
+    parser.add_argument("--percentile", type=int, default=5)
+    parser.add_argument("--p_value", type=float, default=0.05)
+    parser.add_argument("--n_splits", type=int, default=3)
 
-# Check if protein exists
-if protein_name not in proteomics.columns:
-    print(f"Protein {protein_name} not found in proteomics data.")
-    sys.exit(1)
+    args = parser.parse_args()
 
-# Define models and parameter grids
-if model_type == 'elasticnet':
-    model = ElasticNet()
-    param_grid = {
-        'alpha': [0.1, 0.5, 1, 10],   # Regularization strengths
-        'l1_ratio': [0.1, 0.5, 0.9],  # Mix of L1 and L2
-    }
+    # sanitize protein name (important for SLURM + sed + CRLF issues)
+    args.protein = args.protein.strip().replace("\r", "")
 
-n_splits = 5
+    save_only_best = (not args.full_output)  # default True
 
-# Select the pipeline
-pipeline, model_type = select_pipeline(pipeline_name, model_type)
+    # Paths
+    data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+    results_dir = os.path.join(data_dir, "results")
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
 
-print(f"Running {pipeline_name} pipeline for protein {protein_name} over all samples (LOO)...")
-try:
-    # Run the selected pipeline for the single protein
-    if pipeline_name == 'fixed_percentile':
-        results_df = pipeline(
-            model=model,
-            param_grid=param_grid,
-            X=transcriptomics,
-            y=proteomics,
-            protein_name=protein_name,
-            feature_selector='pearson',
-            n_splits=n_splits,
-            percentile=5  # Fixed percentile
+    transcript_path = os.path.join(data_dir, "transcriptomics_filtered.joblib")
+    protein_path = os.path.join(data_dir, "proteomics_matched.joblib")
+
+    print("Loading Data...")
+    print("data_dir:", data_dir)
+    print("results_dir:", results_dir)
+    print("transcript_path:", transcript_path, "exists:", os.path.exists(transcript_path))
+    print("protein_path:", protein_path, "exists:", os.path.exists(protein_path))
+
+    X = load(transcript_path)
+    Y = load(protein_path)
+
+    print("Running protein:", repr(args.protein))
+    print("Proteomics shape:", getattr(Y, "shape", None))
+
+    if args.protein not in Y.columns:
+        # print a few close matches to debug typos/whitespace
+        print("Error: {} not found in Y.columns.".format(repr(args.protein)))
+        print("First 10 Y columns:", list(Y.columns[:10]))
+        sys.exit(1)
+
+    param_grid = {"alpha": [0.1, 0.5, 1.0], "l1_ratio": [0.1, 0.5, 0.9]}
+    pipeline_func = select_pipeline(args.pipeline)
+
+    print("Starting LOO for {} using pipeline={} ...".format(args.protein, args.pipeline))
+    print("save_only_best =", save_only_best)
+    print("Outputs will be saved to:", results_dir)
+
+    # ---------------------------------------------------------
+    # Run pipeline
+    # ---------------------------------------------------------
+    if args.pipeline == "fixed_percentile":
+        raw_results = pipeline_func(
+            None,
+            param_grid,
+            X,
+            Y,
+            args.protein,
+            feature_selector="anova",
+            n_splits=args.n_splits,
+            percentile=args.percentile,
+            save_only_best=save_only_best,
+            output_dir=results_dir,
         )
-    elif pipeline_name == 'fixed_p':
-        results_df = pipeline(
-            model=model,
-            param_grid=param_grid,
-            X=transcriptomics,
-            y=proteomics,
-            protein_name=protein_name,
-            feature_selector='pearson',
-            n_splits=n_splits,
-            p_value=0.05  # Fixed p-value
-        )
-    elif pipeline_name == 'fixed_features':
-        results_df = pipeline(
-            model=model,
-            param_grid=param_grid,
-            X=transcriptomics,
-            y=proteomics,
-            protein_name=protein_name,
-            features=load(f"data/{protein_name}_feature_selection_LOO.joblib"),
-            n_splits=n_splits
-        )
-except Exception as e:
-    print(f"Error during pipeline execution: {e}")
-    sys.exit(1)
 
-# Save results using Joblib
-output_file = os.path.join(data_dir, f"{protein_name}_{pipeline_name}_{model_type}_LOO_results.joblib")
-try:
-    print(f"Saving results to {output_file}...")
-    dump(results_df, output_file)
-    print("Pipeline finished successfully.")
-except Exception as e:
-    print(f"Error saving results: {e}")
-    sys.exit(1)
+    elif args.pipeline == "fixed_p":
+        raw_results = pipeline_func(
+            None,
+            param_grid,
+            X,
+            Y,
+            args.protein,
+            feature_selector="anova",
+            n_splits=args.n_splits,
+            p_value=args.p_value,
+            save_only_best=save_only_best,
+            output_dir=results_dir,
+        )
+
+    else:  # "union"
+        raw_results = pipeline_func(
+            None,
+            param_grid,
+            X,
+            Y,
+            args.protein,
+            feature_selector="anova",
+            percentile=args.percentile,
+            n_splits_stage1=args.n_splits,
+            n_splits_stage2=args.n_splits,
+            save_only_best=save_only_best,
+            output_dir=results_dir,
+        )
+
+    # ---------------------------------------------------------
+    # Output logic
+    # ---------------------------------------------------------
+    if save_only_best:
+        # pipeline_functions already wrote {results_dir}/{protein}_best.parquet (or CSV fallback)
+        out_best = os.path.join(results_dir, "{}_best.parquet".format(args.protein))
+        out_best_csv = os.path.join(results_dir, "{}_best.csv".format(args.protein))
+
+        if os.path.exists(out_best):
+            print("Done. Saved:", out_best)
+        elif os.path.exists(out_best_csv):
+            print("Done. Parquet unavailable; saved:", out_best_csv)
+        else:
+            print("Done, but best output file was not found. Check results_dir permissions/path.")
+        return
+
+    # Full output mode: consensus + loo_stats
+    coefs_df = pd.DataFrame(raw_results["features_coef_dict"].tolist()).fillna(0.0)
+    mean_weights = coefs_df.mean(axis=0)
+    stability = (coefs_df != 0).mean(axis=0)
+
+    consensus_df = pd.DataFrame(
+        {"gene": mean_weights.index, "weight": mean_weights.values, "stability": stability.values}
+    ).query("weight != 0")
+
+    output_path = os.path.join(results_dir, "{}_consensus_model.parquet".format(args.protein))
+    consensus_df.to_parquet(output_path, compression="snappy")
+
+    perf_path = os.path.join(results_dir, "{}_loo_stats.joblib".format(args.protein))
+    dump(raw_results[["LOO sample", "true", "predicted"]], perf_path)
+
+    print("Process complete. Consensus saved to {}".format(output_path))
+    print("LOO stats saved to {}".format(perf_path))
+
+
+if __name__ == "__main__":
+    main()
