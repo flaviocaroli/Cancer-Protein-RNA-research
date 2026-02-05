@@ -45,7 +45,7 @@ def main():
         "--pipeline",
         type=str,
         default="fixed_percentile",
-        choices=["fixed_percentile", "fixed_p", "union"],
+        choices=["fixed_percentile", "fixed_p", "union", "naive_cluster"],
     )
     parser.add_argument(
         "--full_output",
@@ -62,6 +62,20 @@ def main():
     parser.add_argument("--enet_selection", type=str, default="random")
     parser.add_argument("--fit_intercept", action="store_true", help="Fit ElasticNet intercept. Default False.")
     parser.add_argument("--no_zscore", action="store_true", help="Disable z-scoring. Default is z-score (no leakage).")
+
+    # NEW (naive_cluster knobs/paths)
+    parser.add_argument(
+        "--clusters_csv",
+        type=str,
+        default=None,
+        help="Path to clusters CSV (required for --pipeline naive_cluster).",
+    )
+    parser.add_argument(
+        "--naive_n_samples",
+        type=int,
+        default=None,
+        help="Optional: only use first N samples for naive_cluster feature selection + modeling (debug/fast runs).",
+    )
 
     # paths
     parser.add_argument("--data_dir", type=str, default=None, help="Path to data folder (joblibs + protein_list.txt).")
@@ -103,6 +117,17 @@ def main():
         print("Error: missing protein list at {}".format(protein_list_path))
         sys.exit(1)
 
+    # Validate naive_cluster requirements early
+    clusters_csv_path = None
+    if args.pipeline == "naive_cluster":
+        if args.clusters_csv is None:
+            print("Error: --pipeline naive_cluster requires --clusters_csv PATH.")
+            sys.exit(1)
+        clusters_csv_path = str(Path(args.clusters_csv).resolve())
+        if not os.path.exists(clusters_csv_path):
+            print("Error: missing clusters csv at {}".format(clusters_csv_path))
+            sys.exit(1)
+
     print("Loading data...")
     X = load(transcript_path)
     Y = load(protein_path)
@@ -134,12 +159,20 @@ def main():
     proteins = all_proteins[start_idx:end_idx]
 
     if len(proteins) == 0:
-        print("No proteins selected (start_idx={}, group_size={}, total={}). Nothing to do.".format(start_idx, group_size, total))
+        print(
+            "No proteins selected (start_idx={}, group_size={}, total={}). Nothing to do.".format(
+                start_idx, group_size, total
+            )
+        )
         return
 
     print("Selected proteins: {}..{} (count={}, total_list={})".format(start_idx, end_idx - 1, len(proteins), total))
     print("Pipeline={}, save_only_best={}, results_dir={}".format(args.pipeline, (not args.full_output), str(results_dir)))
     print("group_size={} (arg_group_size={}, target_chunks={})".format(group_size, args.group_size, args.target_chunks))
+
+    if args.pipeline == "naive_cluster":
+        print("clusters_csv={}".format(clusters_csv_path))
+        print("naive_n_samples={}".format(args.naive_n_samples))
 
     # grid
     param_grid = {"alpha": [0.1, 0.5, 1.0], "l1_ratio": [0.1, 0.5, 0.9]}
@@ -163,6 +196,9 @@ def main():
         zscore_eps=1e-8,
         save_only_best=(not args.full_output),
         output_dir=str(results_dir),
+        # NEW args (only used by pipeline="naive_cluster")
+        clusters_csv_path=clusters_csv_path,
+        naive_n_samples=args.naive_n_samples,
     )
 
     # Save batch file
@@ -184,7 +220,11 @@ def main():
             for p in kept_prots:
                 f.write(p.strip() + "\n")
         os.replace(tmp, protein_list_path)
-        print("Consumed {} proteins from protein_list.txt (deleted indices {}..{})".format(len(proteins), start_idx, end_idx - 1))
+        print(
+            "Consumed {} proteins from protein_list.txt (deleted indices {}..{})".format(
+                len(proteins), start_idx, end_idx - 1
+            )
+        )
 
     print("Done.")
 

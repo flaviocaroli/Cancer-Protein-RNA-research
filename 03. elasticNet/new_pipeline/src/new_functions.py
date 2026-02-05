@@ -17,6 +17,138 @@ np.random.seed(42)
 
 
 # ============================================================
+# Naive cluster-based LOO feature selection (NEW)
+# ============================================================
+MAX_FEATURES: Dict[int, int] = {
+    1: 8600,
+    2: 10400,
+    3: 6700,
+}
+
+
+def _load_clusters_map(clusters_csv_path: Union[str, Path]) -> pd.Series:
+    """
+    Load a clusters CSV into a Series mapping: protein_name -> cluster_id.
+
+    Tries to be robust to column naming:
+      - protein column: 'protein' or 'protein_name' else first column
+      - cluster column: 'cluster_id' or 'cluster' else the first non-protein column
+    """
+    p = Path(clusters_csv_path)
+    if not p.exists():
+        raise FileNotFoundError("clusters_csv_path not found: {}".format(str(p)))
+
+    df = pd.read_csv(p)
+
+    if df.shape[1] < 2:
+        raise ValueError("clusters_csv_path must have at least 2 columns (protein, cluster_id).")
+
+    # protein column
+    if "protein" in df.columns:
+        prot_col = "protein"
+    elif "protein_name" in df.columns:
+        prot_col = "protein_name"
+    else:
+        prot_col = df.columns[0]
+
+    # cluster column
+    cluster_candidates = ["cluster_id", "cluster", "Cluster", "clusterId", "clusterID"]
+    cluster_col = None
+    for c in cluster_candidates:
+        if c in df.columns and c != prot_col:
+            cluster_col = c
+            break
+    if cluster_col is None:
+        non_prot_cols = [c for c in df.columns if c != prot_col]
+        cluster_col = non_prot_cols[0]
+
+    s = df.set_index(prot_col)[cluster_col]
+    # normalize index to str for reliable lookup
+    s.index = s.index.astype(str)
+    return s
+
+
+def naive_cluster_feature_selection_indices(
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    protein_name: str,
+    *,
+    clusters_csv_path: Union[str, Path],
+    n_samples: Optional[int] = None,
+) -> dict:
+    """
+    Highly optimized LOO feature selection using vectorized ANOVA (f_regression),
+    keeping top-N features where N depends on the protein's cluster id.
+
+    Returns a CSR-like structure:
+      - samples: array of sample ids (row labels)
+      - indptr: offsets into indices per sample (len = n_samples + 1)
+      - indices: concatenated feature indices (column positions into X)
+      - n_genes: total number of genes/features in X
+    """
+    if protein_name not in y.columns:
+        raise ValueError("Protein {} not found in y columns.".format(protein_name))
+
+    # 1) Resolve cluster and N features
+    clusters_map = _load_clusters_map(clusters_csv_path)
+    if str(protein_name) not in clusters_map.index:
+        raise ValueError("Protein {} not present in clusters file.".format(protein_name))
+
+    cluster_id = int(clusters_map.loc[str(protein_name)])
+    if cluster_id not in MAX_FEATURES:
+        raise ValueError("Cluster id {} not in MAX_FEATURES.".format(cluster_id))
+
+    keep_top = int(MAX_FEATURES[cluster_id])
+
+    # 2) Prepare Data (Slicing)
+    sample_idx = X.index if n_samples is None else X.index[: int(n_samples)]
+    X_subset = X.loc[sample_idx]
+    y_subset = y.loc[sample_idx, protein_name]
+
+    X_values = X_subset.values  # (n_samples, n_genes)
+    y_values = y_subset.values  # (n_samples,)
+
+    n_genes = int(X_values.shape[1])
+    samples: Sequence[str] = list(sample_idx)
+
+    # 3) Output buffers
+    indptr = [0]
+    indices: List[int] = []
+
+    # 4) Optimized LOO Loop
+    n_rows = int(X_values.shape[0])
+
+    for i in range(n_rows):
+        mask = np.ones(n_rows, dtype=bool)
+        mask[i] = False
+
+        X_train = X_values[mask]
+        y_train = y_values[mask]
+
+        f_scores, _ = f_regression(X_train, y_train)
+        np.nan_to_num(f_scores, copy=False, nan=-1.0)
+
+        k = min(int(keep_top), n_genes)
+        if k <= 0:
+            chosen_idx = np.empty(0, dtype=np.int64)
+        else:
+            part_indices = np.argpartition(f_scores, n_genes - k)[n_genes - k :]
+            top_scores = f_scores[part_indices]
+            sorted_order = np.argsort(top_scores)[::-1]
+            chosen_idx = part_indices[sorted_order]
+
+        indices.extend(chosen_idx.tolist())
+        indptr.append(len(indices))
+
+    return {
+        "samples": np.asarray(samples),
+        "indptr": np.asarray(indptr, dtype=np.uint32),
+        "indices": np.asarray(indices, dtype=np.uint32),
+        "n_genes": n_genes,
+    }
+
+
+# ============================================================
 # Feature selection
 # ============================================================
 def _select_features_percentile(
@@ -243,7 +375,6 @@ def best_only_row_for_protein(
         _safe_to_parquet_or_csv(out, out_path)
 
     return out
-
 
 
 # ============================================================
@@ -743,6 +874,84 @@ def cv_union(
     return raw_stage2
 
 
+# ============================================================
+# NEW pipeline: naive cluster LOO feature selection + fixed-features CV
+# ============================================================
+def cv_pipeline_naive_cluster(
+    param_grid: Dict[str, Sequence[Any]],
+    X: pd.DataFrame,
+    y: pd.DataFrame,
+    protein_name: str,
+    *,
+    clusters_csv_path: Union[str, Path],
+    n_samples: Optional[int] = None,
+    n_splits: int = 3,
+    enet_max_iter: int = 5000,
+    enet_tol: float = 1e-3,
+    enet_selection: str = "random",
+    fit_intercept: bool = False,
+    zscore: bool = True,
+    zscore_eps: float = 1e-8,
+    save_only_best: bool = True,
+    output_dir: Optional[Union[str, Path]] = None,
+) -> pd.DataFrame:
+    """
+    Pipeline that uses naive_cluster_feature_selection_indices() to produce a per-LOO-sample
+    feature list (top-N depends on the protein's cluster), then runs the standard fixed-features
+    ElasticNet LOO pipeline (with inner CV hyperparam selection).
+    """
+    # Optional slicing for quick experiments
+    if n_samples is not None:
+        idx = X.index[: int(n_samples)]
+        X = X.loc[idx]
+        y = y.loc[idx]
+
+    fs = naive_cluster_feature_selection_indices(
+        X=X,
+        y=y,
+        protein_name=protein_name,
+        clusters_csv_path=clusters_csv_path,
+        n_samples=None,  # already sliced above if requested
+    )
+
+    samples = fs["samples"]
+    indptr = fs["indptr"]
+    indices = fs["indices"]
+
+    # Build features DataFrame aligned to X.index
+    features_df = pd.DataFrame(index=X.index)
+    feats_per_sample: List[List[str]] = []
+
+    # Map: sample -> selected genes (by column indices)
+    colnames = list(X.columns)
+    for i, s in enumerate(samples):
+        start = int(indptr[i])
+        end = int(indptr[i + 1])
+        idxs = indices[start:end].astype(int, copy=False)
+        genes = [colnames[j] for j in idxs if 0 <= int(j) < len(colnames)]
+        feats_per_sample.append(genes)
+
+    # Ensure alignment to X.index order (samples is derived from X.index[:...], so should match)
+    features_df["features"] = feats_per_sample
+
+    return cv_pipeline_fixed_features(
+        param_grid=param_grid,
+        X=X,
+        y=y,
+        protein_name=protein_name,
+        features=features_df,
+        n_splits=n_splits,
+        enet_max_iter=enet_max_iter,
+        enet_tol=enet_tol,
+        enet_selection=enet_selection,
+        fit_intercept=fit_intercept,
+        zscore=zscore,
+        zscore_eps=zscore_eps,
+        save_only_best=save_only_best,
+        output_dir=output_dir,
+    )
+
+
 def run_protein_group(
     proteins: Sequence[str],
     pipeline: str,
@@ -764,6 +973,9 @@ def run_protein_group(
     zscore_eps: float = 1e-8,
     save_only_best: bool = True,
     output_dir: Optional[Union[str, Path]] = None,
+    # NEW: only needed for pipeline="naive_cluster"
+    clusters_csv_path: Optional[Union[str, Path]] = None,
+    naive_n_samples: Optional[int] = None,
 ) -> pd.DataFrame:
     """Run the chosen pipeline for a list of proteins and concatenate outputs."""
     pipeline = str(pipeline)
@@ -820,6 +1032,26 @@ def run_protein_group(
                 percentile=percentile,
                 n_splits_stage1=n_splits_stage1,
                 n_splits_stage2=n_splits_stage2,
+                enet_max_iter=enet_max_iter,
+                enet_tol=enet_tol,
+                enet_selection=enet_selection,
+                fit_intercept=fit_intercept,
+                zscore=zscore,
+                zscore_eps=zscore_eps,
+                save_only_best=save_only_best,
+                output_dir=output_dir,
+            )
+        elif pipeline == "naive_cluster":
+            if clusters_csv_path is None:
+                raise ValueError("pipeline='naive_cluster' requires clusters_csv_path.")
+            dfp = cv_pipeline_naive_cluster(
+                param_grid=param_grid,
+                X=X,
+                y=Y,
+                protein_name=prot,
+                clusters_csv_path=clusters_csv_path,
+                n_samples=naive_n_samples,
+                n_splits=n_splits,
                 enet_max_iter=enet_max_iter,
                 enet_tol=enet_tol,
                 enet_selection=enet_selection,
