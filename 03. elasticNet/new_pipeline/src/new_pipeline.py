@@ -1,6 +1,6 @@
 # new_pipeline.py
-# Runs a *group* of proteins per call (e.g., 511 proteins).
-# Writes per-protein best files and a concatenated batch parquet into data/results/.
+# Runs a *group* of proteins per call.
+# Writes per-protein best files and a concatenated batch parquet.
 # Compatible with Python 3.8+.
 
 import argparse
@@ -10,7 +10,9 @@ from pathlib import Path
 
 from joblib import load
 
+# Import both standard and normalization runners
 from new_functions import run_protein_group
+from norm_functions import run_protein_group_norm
 
 
 def read_protein_list(protein_list_path):
@@ -22,63 +24,67 @@ def read_protein_list(protein_list_path):
 def main():
     parser = argparse.ArgumentParser()
 
-    # chunking
-    parser.add_argument("--chunk_id", type=int, default=None, help="0-based chunk id. start_idx = chunk_id*group_size")
-    parser.add_argument("--start_idx", type=int, default=None, help="0-based start index into protein_list.txt")
+    # ---------------------------
+    # 1. Chunking / Grouping
+    # ---------------------------
+    parser.add_argument("--chunk_id", type=int, default=None, help="0-based chunk id.")
+    parser.add_argument("--start_idx", type=int, default=None, help="0-based start index.")
+    parser.add_argument("--group_size", type=int, default=None, help="Proteins per run.")
+    parser.add_argument("--target_chunks", type=int, default=10, help="Target number of chunks if group_size not set.")
 
-    # NEW: group_size can be computed from target_chunks
-    parser.add_argument(
-        "--group_size",
-        type=int,
-        default=None,
-        help="How many proteins to run in this call (overrides --target_chunks).",
-    )
-    parser.add_argument(
-        "--target_chunks",
-        type=int,
-        default=10,
-        help="If --group_size is not set, group_size = ceil(total_proteins/target_chunks).",
-    )
-
-    # pipeline
+    # ---------------------------
+    # 2. Pipeline Strategy (Feature Selection logic)
+    # ---------------------------
     parser.add_argument(
         "--pipeline",
         type=str,
         default="fixed_percentile",
-        choices=["fixed_percentile", "fixed_p", "union"],
-    )
-    parser.add_argument(
-        "--full_output",
-        action="store_true",
-        help="If set, save full LOO outputs (large). Default: best-only.",
+        choices=["fixed_percentile", "fixed_p", "union", "naive_cluster"],
+        help="The feature selection strategy to use.",
     )
 
-    # knobs
+    # ---------------------------
+    # 3. Normalization Method (Data Transformation)
+    # ---------------------------
+    parser.add_argument(
+        "--normalization",
+        type=str,
+        default="zscore",
+        choices=["zscore", "binning", "ranking", "none"],
+        help="The data normalization method. 'zscore' is standard. 'binning'/'ranking' use Relative Representations.",
+    )
+
+    # ---------------------------
+    # 4. Hyperparameters & Settings
+    # ---------------------------
     parser.add_argument("--percentile", type=int, default=5)
     parser.add_argument("--p_value", type=float, default=0.05)
     parser.add_argument("--n_splits", type=int, default=5)
     parser.add_argument("--enet_max_iter", type=int, default=5000)
     parser.add_argument("--enet_tol", type=float, default=1e-3)
     parser.add_argument("--enet_selection", type=str, default="random")
-    parser.add_argument("--fit_intercept", action="store_true", help="Fit ElasticNet intercept. Default False.")
-    parser.add_argument("--no_zscore", action="store_true", help="Disable z-scoring. Default is z-score (no leakage).")
+    parser.add_argument("--fit_intercept", action="store_true", help="Fit ElasticNet intercept.")
+    
+    # Binning specific
+    parser.add_argument("--n_bins", type=int, default=50, help="Bins for --normalization binning.")
 
-    # paths
-    parser.add_argument("--data_dir", type=str, default=None, help="Path to data folder (joblibs + protein_list.txt).")
-    parser.add_argument("--results_dir", type=str, default=None, help="Where to write outputs. Default: <data_dir>/results")
-    parser.add_argument("--protein_list", type=str, default=None, help="Path to protein_list.txt")
+    # Naive Cluster specific
+    parser.add_argument("--clusters_csv", type=str, default=None, help="Required for --pipeline naive_cluster.")
+    parser.add_argument("--naive_n_samples", type=int, default=None, help="Debug limit for naive_cluster.")
 
-    # output controls
-    parser.add_argument("--no_batch_file", action="store_true", help="Do not save concatenated batch parquet.")
-    parser.add_argument(
-        "--consume_list",
-        action="store_true",
-        help="DANGEROUS with parallel jobs: delete processed lines from protein_list.txt (sequential use only).",
-    )
+    # Output / Paths
+    parser.add_argument("--full_output", action="store_true", help="Save full LOO outputs.")
+    parser.add_argument("--data_dir", type=str, default=None)
+    parser.add_argument("--results_dir", type=str, default=None)
+    parser.add_argument("--protein_list", type=str, default=None)
+    parser.add_argument("--no_batch_file", action="store_true")
+    parser.add_argument("--consume_list", action="store_true")
 
     args = parser.parse_args()
 
-    # Resolve dirs (assumes src/ is next to ../data/)
+    # ---------------------------
+    # Setup Directories
+    # ---------------------------
     if args.data_dir is None:
         here = Path(__file__).resolve().parent
         data_dir = (here.parent / "data").resolve()
@@ -89,40 +95,49 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     protein_list_path = args.protein_list or str((data_dir / "protein_list.txt").resolve())
-
     transcript_path = str((data_dir / "transcriptomics_common.joblib").resolve())
     protein_path = str((data_dir / "proteomics_matched.joblib").resolve())
 
+    # Path Validations
     if not os.path.exists(transcript_path):
-        print("Error: missing transcriptomics joblib at {}".format(transcript_path))
-        sys.exit(1)
+        sys.exit(f"Error: missing {transcript_path}")
     if not os.path.exists(protein_path):
-        print("Error: missing proteomics joblib at {}".format(protein_path))
-        sys.exit(1)
+        sys.exit(f"Error: missing {protein_path}")
     if not os.path.exists(protein_list_path):
-        print("Error: missing protein list at {}".format(protein_list_path))
-        sys.exit(1)
+        sys.exit(f"Error: missing {protein_list_path}")
+
+    # Pipeline Specific Validations
+    if args.pipeline == "naive_cluster":
+        if args.clusters_csv is None:
+            sys.exit("Error: --pipeline naive_cluster requires --clusters_csv.")
+        if not os.path.exists(args.clusters_csv):
+            sys.exit(f"Error: missing {args.clusters_csv}")
+
+    # Binning/Ranking Validity Check
+    # norm_functions.py currently only supports fixed_percentile logic
+    if args.normalization in ["binning", "ranking"]:
+        if args.pipeline != "fixed_percentile":
+            sys.exit(f"Error: --normalization {args.normalization} currently only supports --pipeline fixed_percentile.")
 
     print("Loading data...")
     X = load(transcript_path)
     Y = load(protein_path)
 
-    # Load protein list and compute total
     all_proteins = read_protein_list(protein_list_path)
     total = len(all_proteins)
     if total == 0:
-        print("protein_list.txt is empty (after removing comments/blanks). Nothing to do.")
+        print("Protein list is empty.")
         return
 
-    # Decide group_size
+    # ---------------------------
+    # Grouping Logic
+    # ---------------------------
     if args.group_size is not None:
         group_size = int(args.group_size)
     else:
         target_chunks = int(args.target_chunks) if args.target_chunks else 10
-        group_size = (total + target_chunks - 1) // target_chunks  # ceil(total/target_chunks)
-        group_size = max(group_size, 1)
+        group_size = max((total + target_chunks - 1) // target_chunks, 1)
 
-    # Determine start index
     if args.start_idx is not None:
         start_idx = int(args.start_idx)
     elif args.chunk_id is not None:
@@ -133,58 +148,88 @@ def main():
     end_idx = min(start_idx + group_size, total)
     proteins = all_proteins[start_idx:end_idx]
 
-    if len(proteins) == 0:
-        print("No proteins selected (start_idx={}, group_size={}, total={}). Nothing to do.".format(start_idx, group_size, total))
+    if not proteins:
+        print("No proteins selected.")
         return
 
-    print("Selected proteins: {}..{} (count={}, total_list={})".format(start_idx, end_idx - 1, len(proteins), total))
-    print("Pipeline={}, save_only_best={}, results_dir={}".format(args.pipeline, (not args.full_output), str(results_dir)))
-    print("group_size={} (arg_group_size={}, target_chunks={})".format(group_size, args.group_size, args.target_chunks))
+    print(f"Proteins: {start_idx}..{end_idx - 1} ({len(proteins)}/{total})")
+    print(f"Pipeline: {args.pipeline} | Normalization: {args.normalization}")
 
-    # grid
+    # ---------------------------
+    # Execution Dispatch
+    # ---------------------------
     param_grid = {"alpha": [0.1, 0.5, 1.0], "l1_ratio": [0.1, 0.5, 0.9]}
 
-    out = run_protein_group(
-        proteins=proteins,
-        pipeline=args.pipeline,
-        X=X,
-        Y=Y,
-        param_grid=param_grid,
-        percentile=args.percentile,
-        p_value=args.p_value,
-        n_splits=args.n_splits,
-        n_splits_stage1=args.n_splits,
-        n_splits_stage2=args.n_splits,
-        enet_max_iter=args.enet_max_iter,
-        enet_tol=args.enet_tol,
-        enet_selection=args.enet_selection,
-        fit_intercept=bool(args.fit_intercept),
-        zscore=(not args.no_zscore),
-        zscore_eps=1e-8,
-        save_only_best=(not args.full_output),
-        output_dir=str(results_dir),
-    )
+    if args.normalization in ["binning", "ranking"]:
+        # Use norm_functions
+        # Note: We pass args.normalization as the 'pipeline' arg to run_protein_group_norm 
+        # because that function expects 'binning' or 'ranking' as the string key.
+        out = run_protein_group_norm(
+            proteins=proteins,
+            pipeline=args.normalization,  # 'binning' or 'ranking'
+            X=X,
+            Y=Y,
+            param_grid=param_grid,
+            feature_selector="anova",
+            percentile=args.percentile,
+            n_splits=args.n_splits,
+            n_bins=args.n_bins,
+            enet_max_iter=args.enet_max_iter,
+            enet_tol=args.enet_tol,
+            enet_selection=args.enet_selection,
+            fit_intercept=bool(args.fit_intercept),
+            save_only_best=(not args.full_output),
+            output_dir=str(results_dir),
+        )
+    else:
+        # Use new_functions (Standard / Z-score)
+        # Map normalization arg to boolean
+        use_zscore = (args.normalization == "zscore")
+        
+        out = run_protein_group(
+            proteins=proteins,
+            pipeline=args.pipeline,
+            X=X,
+            Y=Y,
+            param_grid=param_grid,
+            percentile=args.percentile,
+            p_value=args.p_value,
+            n_splits=args.n_splits,
+            n_splits_stage1=args.n_splits,
+            n_splits_stage2=args.n_splits,
+            enet_max_iter=args.enet_max_iter,
+            enet_tol=args.enet_tol,
+            enet_selection=args.enet_selection,
+            fit_intercept=bool(args.fit_intercept),
+            zscore=use_zscore,
+            zscore_eps=1e-8,
+            save_only_best=(not args.full_output),
+            output_dir=str(results_dir),
+            clusters_csv_path=args.clusters_csv,
+            naive_n_samples=args.naive_n_samples,
+        )
 
-    # Save batch file
-    if not args.no_batch_file:
-        batch_name = "batch_{}_{}_{}.parquet".format(start_idx, end_idx - 1, args.pipeline)
+    # ---------------------------
+    # Saving Results
+    # ---------------------------
+    if not args.no_batch_file and not out.empty:
+        # Include normalization in filename for clarity
+        batch_name = f"batch_{start_idx}_{end_idx-1}_{args.pipeline}_{args.normalization}.parquet"
         batch_path = results_dir / batch_name
         try:
             out.to_parquet(batch_path, compression="snappy", index=False)
         except Exception:
             out.to_csv(batch_path.with_suffix(".csv"), index=False)
-        print("Saved batch results to:", str(batch_path))
+        print(f"Saved batch: {batch_path}")
 
     if args.consume_list:
-        # Since we parsed proteins ignoring comments/blanks, consume_list should operate on that same filtered list.
         kept_prots = all_proteins[:start_idx] + all_proteins[end_idx:]
-
         tmp = protein_list_path + ".tmp"
         with open(tmp, "w") as f:
             for p in kept_prots:
-                f.write(p.strip() + "\n")
+                f.write(p + "\n")
         os.replace(tmp, protein_list_path)
-        print("Consumed {} proteins from protein_list.txt (deleted indices {}..{})".format(len(proteins), start_idx, end_idx - 1))
+        print(f"Consumed {len(proteins)} proteins.")
 
     print("Done.")
 
