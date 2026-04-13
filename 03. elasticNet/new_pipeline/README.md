@@ -1,4 +1,4 @@
-# pipeline_proteins_v2
+# new_pipeline
 
 ## Files
 This folder contains a **script-driven pipeline** (with SLURM support) plus supporting modules in `src/`. The workflow is designed for **chunked execution over many proteins** with flexible feature selection and normalization strategies.
