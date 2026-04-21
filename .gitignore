@@ -1,0 +1,11 @@
+*.csv
+*.h5
+*.joblib
+*.pyc
+*.parquet
+*.txt
+*.png
+*.xlsx
+*.gz
+*.npz
+*.npy
