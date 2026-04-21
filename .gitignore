@@ -9,3 +9,8 @@
 *.gz
 *.npz
 *.npy
+*.pkl
+*.tsv
+*.gtc
+*.cct
+*.seg
