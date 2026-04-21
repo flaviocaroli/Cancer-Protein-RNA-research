@@ -11,6 +11,6 @@
 *.npy
 *.pkl
 *.tsv
-*.gtc
+*.gct
 *.cct
 *.seg
