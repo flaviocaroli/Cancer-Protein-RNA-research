@@ -1,78 +1,174 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ================= USER SETTINGS (override via env) =================
-# Paths (must be visible on all nodes)
+# ================= BASIC PATHS =================
 DATA_DIR=${DATA_DIR:-$PWD/data}
 SRC_DIR=${SRC_DIR:-$PWD/src}
+RESULTS_DIR=${RESULTS_DIR:-$PWD/results_xgb}
 LOG_DIR=${LOG_DIR:-$PWD/logs}
 
-# SLURM resources
-PARTITION=${PARTITION:-medium_gpu}
-TIME=${TIME:-03:00:00}
+# ================= SLURM SETTINGS =================
+PARTITION=${PARTITION:-compute}
+TIME=${TIME:-2-00:00:00}
 CPUS_PER_TASK=${CPUS_PER_TASK:-8}
 MEM=${MEM:-32G}
-USE_GPU=${USE_GPU:-1}            # 1 = request GPU + pass --force_gpu; 0 = CPU only
+ARRAY_LIMIT=${ARRAY_LIMIT:-29}
+
+USE_GPU=${USE_GPU:-0}
 GPUS_PER_TASK=${GPUS_PER_TASK:-1}
 
-# Throttle concurrent array tasks (optional)
-ARRAY_LIMIT=${ARRAY_LIMIT:-}     # e.g. 16 → "--array=1-N%16"
+# ================= PIPELINE DEFAULTS =================
+NORMALIZATIONS=${NORMALIZATIONS:-none,zscore,rank,qbin50}
 
-# Pipeline knobs (forwarded to pipeline.py)
+PROTEINS_PER_TASK=${PROTEINS_PER_TASK:-1000}
+PROTEIN_START=${PROTEIN_START:-1}
+PROTEIN_END=${PROTEIN_END:-}
+
 SPLITS=${SPLITS:-3}
-SELECT_K=${SELECT_K:-0}        # 0 = no Spearman prefilter (keep all features)
-EARLY_STOPPING=${EARLY_STOPPING:-100}
-MAX_PARAM_COMBOS=${MAX_PARAM_COMBOS:-12}
-MINIMAL_SAVE=${MINIMAL_SAVE:-1}  # 1 = pass --minimal_save
-N_SAMPLES=${N_SAMPLES:-}         # leave empty to use all samples
-NO_FEATURE_SELECTION=${NO_FEATURE_SELECTION:-0}  # 1 = pass --no_feature_selection
-RESUME_SKIP=${RESUME_SKIP:-1}    # 1 = skip proteins with existing outputs
-# ====================================================================
+SELECT_K=${SELECT_K:-2000}
+EARLY_STOPPING=${EARLY_STOPPING:-10}
+MAX_PARAM_COMBOS=${MAX_PARAM_COMBOS:-}
+N_SAMPLES=${N_SAMPLES:-}
 
-mkdir -p "$DATA_DIR" "$LOG_DIR"
-# Ensure child processes (Python) see these
-export DATA_DIR SRC_DIR LOG_DIR
+GRID_PRESET=${GRID_PRESET:-fast}
+TUNING_STRATEGY=${TUNING_STRATEGY:-once}
+XGB_THREADS=${XGB_THREADS:-$CPUS_PER_TASK}
 
-# --- Ensure required inputs exist ---
-if [[ ! -f "$DATA_DIR/proteomics_matched.joblib" || ! -f "$DATA_DIR/transcriptomics_filtered.joblib" ]]; then
-  echo "ERROR: Missing data files in $DATA_DIR"
-  echo "Expected:"
-  echo " - $DATA_DIR/transcriptomics_filtered.joblib"
-  echo " - $DATA_DIR/proteomics_matched.joblib"
+OUTPUT_MODE=${OUTPUT_MODE:-minimal_h5}
+H5_COMPRESSION_LEVEL=${H5_COMPRESSION_LEVEL:-9}
+H5_MODEL=${H5_MODEL:-best_loo}
+
+SAVE_MODELS=${SAVE_MODELS:-1}
+SAVE_FINAL_MODEL=${SAVE_FINAL_MODEL:-0}
+RESUME_SKIP=${RESUME_SKIP:-1}
+
+OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-}
+RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S)}
+CONDA_ENV=${CONDA_ENV:-xgb_loo}
+
+mkdir -p "$RESULTS_DIR" "$RESULTS_DIR/models" "$LOG_DIR"
+
+# ================= CHECK INPUTS =================
+[[ -f "$SRC_DIR/pipeline.py" ]] || { echo "ERROR: missing $SRC_DIR/pipeline.py"; exit 1; }
+[[ -f "$SRC_DIR/pipeline_functions.py" ]] || { echo "ERROR: missing $SRC_DIR/pipeline_functions.py"; exit 1; }
+[[ -f "$DATA_DIR/transcriptomics_filtered.joblib" ]] || { echo "ERROR: missing $DATA_DIR/transcriptomics_filtered.joblib"; exit 1; }
+[[ -f "$DATA_DIR/proteomics_matched.joblib" ]] || { echo "ERROR: missing $DATA_DIR/proteomics_matched.joblib"; exit 1; }
+
+case "$GRID_PRESET" in tiny|fast|current) ;; *) echo "ERROR: bad GRID_PRESET"; exit 1 ;; esac
+case "$TUNING_STRATEGY" in once|nested) ;; *) echo "ERROR: bad TUNING_STRATEGY"; exit 1 ;; esac
+case "$OUTPUT_MODE" in minimal_h5|full_joblib) ;; *) echo "ERROR: bad OUTPUT_MODE"; exit 1 ;; esac
+case "$H5_MODEL" in best_loo|final) ;; *) echo "ERROR: bad H5_MODEL"; exit 1 ;; esac
+case "$USE_GPU" in 0|1) ;; *) echo "ERROR: USE_GPU must be 0 or 1"; exit 1 ;; esac
+
+if [[ "$OUTPUT_MODE" = "minimal_h5" && "$SAVE_MODELS" = "0" ]]; then
+  echo "ERROR: minimal_h5 requires SAVE_MODELS=1 because the H5 stores the model."
   exit 1
 fi
 
-# --- Build protein list + count (safe to missing env via getenv) ---
-echo "Reading proteins from $DATA_DIR/proteomics_matched.joblib ..."
-TOTAL_PROTEINS=$(
+# ================= MAKE TASK FILE =================
+TASK_FILE="$RESULTS_DIR/xgb_tasks_${RUN_ID}.tsv"
+
+TOTAL_TASKS=$(DATA_DIR="$DATA_DIR" TASK_FILE="$TASK_FILE" \
+NORMALIZATIONS="$NORMALIZATIONS" PROTEINS_PER_TASK="$PROTEINS_PER_TASK" \
+PROTEIN_START="$PROTEIN_START" PROTEIN_END="$PROTEIN_END" \
 python - <<'PY'
 import os
+import re
 from joblib import load
-data_dir = os.getenv("DATA_DIR", ".")
-p = os.path.join(data_dir, "proteomics_matched.joblib")
-Y = load(p)
-cols = list(getattr(Y, "columns", []))
-out = os.path.join(data_dir, "protein_list.txt")
-with open(out, "w", encoding="utf-8") as f:
-    for c in cols:
-        f.write(f"{c}\n")
-print(len(cols))
+
+data_dir = os.environ["DATA_DIR"]
+task_file = os.environ["TASK_FILE"]
+
+X = load(os.path.join(data_dir, "transcriptomics_filtered.joblib"))
+Y = load(os.path.join(data_dir, "proteomics_matched.joblib"))
+
+x_samples = set(map(str, X.index))
+y_index = set(map(str, Y.index))
+y_columns = set(map(str, Y.columns))
+
+index_overlap = len(x_samples & y_index)
+column_overlap = len(x_samples & y_columns)
+
+if index_overlap >= column_overlap:
+    proteins = list(map(str, Y.columns))
+    orientation = "samples_as_rows__proteins_as_columns"
+else:
+    proteins = list(map(str, Y.index))
+    orientation = "proteins_as_rows__samples_as_columns"
+
+def check_norm(n):
+    n = n.strip().lower()
+    if n in {"none", "zscore", "rank"}:
+        return n
+    if re.fullmatch(r"qbin[0-9]+", n) and int(n.replace("qbin", "")) >= 2:
+        return n
+    raise SystemExit(f"ERROR: invalid normalization: {n}")
+
+norms = [check_norm(x) for x in os.environ["NORMALIZATIONS"].split(",") if x.strip()]
+
+n_proteins = len(proteins)
+start = int(os.environ.get("PROTEIN_START") or 1)
+end_env = os.environ.get("PROTEIN_END") or ""
+end = int(end_env) if end_env else n_proteins
+chunk = int(os.environ.get("PROTEINS_PER_TASK") or 1000)
+
+start = max(1, start)
+end = min(n_proteins, end)
+
+if start > end:
+    raise SystemExit(f"ERROR: PROTEIN_START={start} > PROTEIN_END={end}")
+if chunk < 1:
+    raise SystemExit("ERROR: PROTEINS_PER_TASK must be >= 1")
+
+chunks = []
+s = start
+while s <= end:
+    e = min(s + chunk - 1, end)
+    chunks.append((s, e))
+    s = e + 1
+
+with open(task_file, "w", encoding="utf-8") as f:
+    for norm in norms:
+        for s, e in chunks:
+            f.write(f"{s}\t{e}\t{norm}\n")
+
+print(f"Detected orientation: {orientation}", flush=True)
+print(f"Sample overlap with Y.index: {index_overlap}", flush=True)
+print(f"Sample overlap with Y.columns: {column_overlap}", flush=True)
+print(f"Proteins detected: {n_proteins}", flush=True)
+print(f"First proteins: {proteins[:5]}", flush=True)
+print(f"Protein range: {start}-{end}", flush=True)
+print(f"Proteins per task: {chunk}", flush=True)
+print(f"Chunks: {len(chunks)}", flush=True)
+print(f"Normalizations: {norms}", flush=True)
+print(f"Task file: {task_file}", flush=True)
+
+print(len(chunks) * len(norms))
 PY
 )
 
-if [[ -z "${TOTAL_PROTEINS}" || "${TOTAL_PROTEINS}" -lt 1 ]]; then
-  echo "ERROR: No proteins found in proteomics_matched.joblib."
+TOTAL_TASKS=$(echo "$TOTAL_TASKS" | tail -n 1)
+
+if [[ -z "$TOTAL_TASKS" || "$TOTAL_TASKS" -lt 1 ]]; then
+  echo "ERROR: no SLURM tasks created."
   exit 1
 fi
 
-ARRAY_RANGE="1-${TOTAL_PROTEINS}"
-[[ -n "${ARRAY_LIMIT}" ]] && ARRAY_RANGE="${ARRAY_RANGE}%${ARRAY_LIMIT}"
-echo "Submitting SLURM array: ${ARRAY_RANGE} (TOTAL_PROTEINS=${TOTAL_PROTEINS})"
+ARRAY_RANGE="1-${TOTAL_TASKS}"
+if [[ -n "$ARRAY_LIMIT" ]]; then
+  ARRAY_RANGE="${ARRAY_RANGE}%${ARRAY_LIMIT}"
+fi
 
-# --- Submit ONE array job (1 task per protein) ---
+echo "Submitting array: $ARRAY_RANGE"
+echo "Task file: $TASK_FILE"
+echo "Results dir: $RESULTS_DIR"
+echo "Partition: $PARTITION"
+echo "Time: $TIME"
+
+# ================= SUBMIT ARRAY =================
 sbatch <<EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=xgb_loo
+#SBATCH --job-name=xgb_chunk
 #SBATCH --partition=${PARTITION}
 #SBATCH --time=${TIME}
 #SBATCH --nodes=1
@@ -81,86 +177,83 @@ sbatch <<EOF
 #SBATCH --mem=${MEM}
 #SBATCH --array=${ARRAY_RANGE}
 #SBATCH -o ${LOG_DIR}/%x_%A_%a.out
-$([ "${USE_GPU}" = "1" ] && echo "#SBATCH --gres=gpu:${GPUS_PER_TASK}")
+$([ "$USE_GPU" = "1" ] && echo "#SBATCH --gres=gpu:${GPUS_PER_TASK}")
 
 set -euo pipefail
-echo "JobID=\$SLURM_JOB_ID  Task=\$SLURM_ARRAY_TASK_ID  Host=\$(hostname)"
-echo "DATA_DIR=${DATA_DIR}"
 
-# ---------- Optional: activate your Python env ----------
-# set +u
-# module load miniconda3 || true
-# source "\$(conda info --base)/etc/profile.d/conda.sh" || true
-# conda activate xgb || true
-# set -u
+echo "Job: \$SLURM_JOB_ID  Task: \$SLURM_ARRAY_TASK_ID  Host: \$(hostname)"
 
-# Threading hygiene
+export DATA_DIR="${DATA_DIR}"
+export RESULTS_DIR="${RESULTS_DIR}"
+
 export OMP_NUM_THREADS=${CPUS_PER_TASK}
 export MKL_NUM_THREADS=${CPUS_PER_TASK}
 export OPENBLAS_NUM_THREADS=${CPUS_PER_TASK}
 export NUMEXPR_MAX_THREADS=${CPUS_PER_TASK}
 
-# Node-local scratch (prefer site scratch, then SLURM_TMPDIR, else /tmp)
-if [[ -d "/scratch/\$USER" ]]; then
-  NODE_SCRATCH="/scratch/\$USER/\${SLURM_JOB_ID:-\$\$}"
-  mkdir -p "\$NODE_SCRATCH" || true
-else
-  NODE_SCRATCH="\${SLURM_TMPDIR:-/tmp}"
+# Try to activate conda env if conda is available. If this fails, the job still uses current python.
+if command -v conda >/dev/null 2>&1; then
+  set +u
+  source "\$(conda info --base)/etc/profile.d/conda.sh" || true
+  conda activate "${CONDA_ENV}" || true
+  set -u
 fi
-WORKDIR="\$NODE_SCRATCH/xgb_\${SLURM_JOB_ID:-\$\$}"
-mkdir -p "\$WORKDIR/src" "\$WORKDIR/data"
-trap 'rm -rf "\$WORKDIR"' EXIT
 
-# Stage code + data so pipeline.py sees ../data relative to src
-rsync -a --delete "${SRC_DIR}/" "\$WORKDIR/src/"
-rsync -a "${DATA_DIR}/transcriptomics_filtered.joblib" "\$WORKDIR/data/"
-rsync -a "${DATA_DIR}/proteomics_matched.joblib"     "\$WORKDIR/data/"
+echo "Python executable: \$(which python)"
+python - <<'PY'
+import sys
+print("Python version:", sys.version)
+PY
 
-# Resolve protein by array index
-if [[ ! -f "${DATA_DIR}/protein_list.txt" ]]; then
-  echo "ERROR: protein_list.txt not found in ${DATA_DIR}"
-  exit 1
-fi
-PROTEIN_NAME=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${DATA_DIR}/protein_list.txt" || true)
-if [[ -z "\$PROTEIN_NAME" ]]; then
-  echo "No protein for index \$SLURM_ARRAY_TASK_ID; exiting."
-  exit 0
-fi
-echo "Protein: \$PROTEIN_NAME"
+TASK_LINE=\$(sed -n "\${SLURM_ARRAY_TASK_ID}p" "${TASK_FILE}" || true)
 
-# Resume-safe: skip if output already exists on shared FS
-OUT_SHARED="${DATA_DIR}/\${PROTEIN_NAME}_loo_xgboost_LOO_results.joblib"
-if [[ ${RESUME_SKIP} -eq 1 && -f "\$OUT_SHARED" ]]; then
-  echo "Exists, skipping: \$OUT_SHARED"
+if [[ -z "\$TASK_LINE" ]]; then
+  echo "No task line for array index \$SLURM_ARRAY_TASK_ID"
   exit 0
 fi
 
-cd "\$WORKDIR/src"
+IFS=\$'\t' read -r CHUNK_START CHUNK_END NORM_CURRENT <<< "\$TASK_LINE"
 
-# Build args for pipeline.py (new simplified CLI)
-ARGS=( --protein "\$PROTEIN_NAME"
-       --splits ${SPLITS}
-       --select_k ${SELECT_K}
-       --early_stopping ${EARLY_STOPPING} )
-
-# Optional flags
-[[ -n "${MAX_PARAM_COMBOS}" ]]   && ARGS+=( --max_param_combos ${MAX_PARAM_COMBOS} )
-[[ -n "${N_SAMPLES}" ]]          && ARGS+=( --n_samples ${N_SAMPLES} )
-[[ ${MINIMAL_SAVE} -eq 1 ]]      && ARGS+=( --minimal_save )
-[[ ${NO_FEATURE_SELECTION} -eq 1 ]] && ARGS+=( --no_feature_selection )
-[[ ${USE_GPU} -eq 1 ]]           && ARGS+=( --force_gpu )
-
-echo "python pipeline.py \${ARGS[*]}"
-python pipeline.py "\${ARGS[@]}"
-
-# Copy result back to shared data dir
-OUT_LOCAL="\$WORKDIR/data/\${PROTEIN_NAME}_loo_xgboost_LOO_results.joblib"
-if [[ -f "\$OUT_LOCAL" ]]; then
-  rsync -a "\$OUT_LOCAL" "${DATA_DIR}/"
-  echo "Saved -> ${DATA_DIR}/\$(basename "\$OUT_LOCAL")"
+if [[ -z "${OUTPUT_SUFFIX}" ]]; then
+  RUN_OUTPUT_SUFFIX="loo_xgboost_\${NORM_CURRENT}_${GRID_PRESET}_${TUNING_STRATEGY}_k${SELECT_K}"
 else
-  echo "WARNING: output not found: \$OUT_LOCAL"
+  RUN_OUTPUT_SUFFIX="${OUTPUT_SUFFIX}_\${NORM_CURRENT}"
 fi
 
-echo "Task \${SLURM_ARRAY_TASK_ID} done."
+echo "Chunk: \$CHUNK_START-\$CHUNK_END"
+echo "Normalization: \$NORM_CURRENT"
+echo "Output suffix: \$RUN_OUTPUT_SUFFIX"
+
+ARGS=(
+  --protein_start "\$CHUNK_START"
+  --protein_end "\$CHUNK_END"
+  --splits ${SPLITS}
+  --select_k ${SELECT_K}
+  --early_stopping ${EARLY_STOPPING}
+  --normalization "\$NORM_CURRENT"
+  --grid_preset ${GRID_PRESET}
+  --tuning_strategy ${TUNING_STRATEGY}
+  --xgb_threads ${XGB_THREADS}
+  --output_mode ${OUTPUT_MODE}
+  --h5_compression_level ${H5_COMPRESSION_LEVEL}
+  --h5_model ${H5_MODEL}
+  --metrics_dir "${RESULTS_DIR}"
+  --model_dir "${RESULTS_DIR}/models"
+  --resume_check_dir "${RESULTS_DIR}"
+  --output_suffix "\$RUN_OUTPUT_SUFFIX"
+)
+
+[[ -n "${MAX_PARAM_COMBOS}" ]] && ARGS+=(--max_param_combos ${MAX_PARAM_COMBOS})
+[[ -n "${N_SAMPLES}" ]] && ARGS+=(--n_samples ${N_SAMPLES})
+[[ "${USE_GPU}" = "1" ]] && ARGS+=(--force_gpu)
+[[ "${SAVE_MODELS}" = "0" ]] && ARGS+=(--no_save_models)
+[[ "${SAVE_FINAL_MODEL}" = "1" ]] && ARGS+=(--save_final_model)
+[[ "${SAVE_FINAL_MODEL}" = "0" ]] && ARGS+=(--no_save_final_model)
+[[ "${RESUME_SKIP}" = "1" ]] && ARGS+=(--resume_skip)
+[[ "${RESUME_SKIP}" = "0" ]] && ARGS+=(--no_resume_skip)
+
+echo "python ${SRC_DIR}/pipeline.py \${ARGS[*]}"
+python "${SRC_DIR}/pipeline.py" "\${ARGS[@]}"
+
+echo "Done."
 EOF
