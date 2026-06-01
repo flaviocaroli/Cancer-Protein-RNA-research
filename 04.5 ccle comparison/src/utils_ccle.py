@@ -2122,6 +2122,84 @@ def print_model_family_summary(best_df: pd.DataFrame, metric: str, threshold: fl
         print(f"Good proteins best predicted by other labels: {int(other_good)}")
 
 
+
+def procedural_cosine_cascade(threshold, universe=None):
+    """
+    Procedural cascade using test cosine similarity.
+
+    Higher cosine is better, so a protein is counted as predicted well when
+    test_cosine_similarity >= threshold. The stage order matches the Pearson
+    cascade: same-gene proxy first, then ENet, then XGB.
+    """
+    universe = pd.Index(protein_universe if universe is None else universe).astype(str)
+    remaining = set(universe)
+    rows = []
+
+    proxy_idx = _index_by_protein(proxy_best_cosine)
+    enet_idx = _index_by_protein(enet_best_cosine)
+    xgb_idx = _index_by_protein(xgb_best_cosine)
+
+    # 1) Proxy first: best same-gene proxy by cosine similarity.
+    for protein in list(remaining):
+        if protein in proxy_idx.index:
+            row = proxy_idx.loc[protein]
+            value = row.get("test_cosine_similarity", np.nan)
+            if np.isfinite(value) and value >= threshold:
+                rows.append({
+                    "protein": protein,
+                    "threshold": threshold,
+                    "stage": _proxy_label(row),
+                    "metric": value,
+                    "test_cosine_similarity": value,
+                    "run_label": row.get("run_label", ""),
+                })
+                remaining.remove(protein)
+
+    # 2) ENet rescues only remaining proteins.
+    for protein in list(remaining):
+        if protein in enet_idx.index:
+            row = enet_idx.loc[protein]
+            value = row.get("test_cosine_similarity", np.nan)
+            if np.isfinite(value) and value >= threshold:
+                rows.append({
+                    "protein": protein,
+                    "threshold": threshold,
+                    "stage": "ENet",
+                    "metric": value,
+                    "test_cosine_similarity": value,
+                    "run_label": row.get("run_label", ""),
+                })
+                remaining.remove(protein)
+
+    # 3) XGB rescues only remaining proteins.
+    for protein in list(remaining):
+        if protein in xgb_idx.index:
+            row = xgb_idx.loc[protein]
+            value = row.get("test_cosine_similarity", np.nan)
+            if np.isfinite(value) and value >= threshold:
+                rows.append({
+                    "protein": protein,
+                    "threshold": threshold,
+                    "stage": "XGB",
+                    "metric": value,
+                    "test_cosine_similarity": value,
+                    "run_label": row.get("run_label", ""),
+                })
+                remaining.remove(protein)
+
+    # 4) Anything not reaching the cosine threshold.
+    for protein in sorted(remaining):
+        rows.append({
+            "protein": protein,
+            "threshold": threshold,
+            "stage": "Still not good",
+            "metric": np.nan,
+            "test_cosine_similarity": np.nan,
+            "run_label": "",
+        })
+
+    return pd.DataFrame(rows)
+
 def procedural_mse_cascade(threshold, universe=None):
     universe = pd.Index(protein_universe if universe is None else universe).astype(str)
     remaining = set(universe)
@@ -2142,6 +2220,7 @@ def procedural_mse_cascade(threshold, universe=None):
                     "threshold": threshold,
                     "stage": _proxy_label(row),
                     "metric": value,
+                    "test_mse": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2157,6 +2236,7 @@ def procedural_mse_cascade(threshold, universe=None):
                     "threshold": threshold,
                     "stage": "ENet",
                     "metric": value,
+                    "test_mse": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2172,6 +2252,7 @@ def procedural_mse_cascade(threshold, universe=None):
                     "threshold": threshold,
                     "stage": "XGB",
                     "metric": value,
+                    "test_mse": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2183,6 +2264,7 @@ def procedural_mse_cascade(threshold, universe=None):
             "threshold": threshold,
             "stage": "Still not good",
             "metric": np.nan,
+            "test_mse": np.nan,
             "run_label": "",
         })
 
@@ -2210,6 +2292,7 @@ def procedural_pearson_cascade(threshold, include_sc=False, sctranslator_best=No
                     "threshold": threshold,
                     "stage": _proxy_label(row),
                     "metric": value,
+                    "test_pearson_corr": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2225,6 +2308,7 @@ def procedural_pearson_cascade(threshold, include_sc=False, sctranslator_best=No
                     "threshold": threshold,
                     "stage": "ENet",
                     "metric": value,
+                    "test_pearson_corr": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2240,6 +2324,7 @@ def procedural_pearson_cascade(threshold, include_sc=False, sctranslator_best=No
                     "threshold": threshold,
                     "stage": "XGB",
                     "metric": value,
+                    "test_pearson_corr": value,
                     "run_label": row.get("run_label", ""),
                 })
                 remaining.remove(protein)
@@ -2256,6 +2341,7 @@ def procedural_pearson_cascade(threshold, include_sc=False, sctranslator_best=No
                         "threshold": threshold,
                         "stage": f"scTranslator {row.get('sc_size', row.get('run_label', '')).replace('scTranslator ', '')}",
                         "metric": value,
+                        "test_pearson_corr": value,
                         "run_label": row.get("run_label", ""),
                     })
                     remaining.remove(protein)
@@ -2267,6 +2353,7 @@ def procedural_pearson_cascade(threshold, include_sc=False, sctranslator_best=No
             "threshold": threshold,
             "stage": final_label,
             "metric": np.nan,
+            "test_pearson_corr": np.nan,
             "run_label": "",
         })
 
