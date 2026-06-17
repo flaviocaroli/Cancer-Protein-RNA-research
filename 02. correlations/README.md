@@ -1,8 +1,8 @@
 # correlations
 
 
-## Files
-This folder contains a computation folder and three analysis notebooks. In order to get data to use in notebook please run computation/corr_script.py or use the run_corr.sh shell script in an external cluster; corr_test.ipynb is a controllable test script for small data.
+## Notebooks
+This folder contains a computation folder and three analysis notebooks. In order to get data to use in notebook please run new_corr/corr_script.py or use the run_corr.sh shell script in an external cluster; smoke_test.ipynb is a controllable test script for small data.
 
 Once full_correlations are computed and saved to disk, the three notebooks can be used to analyze the results.
 Run notebooks **in order** (01 → 02 → 03).  
