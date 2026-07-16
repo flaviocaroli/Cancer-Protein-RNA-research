@@ -583,7 +583,11 @@ def _standardize_assignment_table(df, analysis_name, source_variable, default_da
         "proxy_mse",
         "enet_mse",
         "xgb_mse",
-        "same_gene_corr_full",
+        "same_gene_corr_train",
+        "corr_scope",
+        "corr_method",
+        "same_gene_corr_full_reference_only",
+        "same_gene_corr_full",  # legacy, reporting only
         "proxy_corr",
         "proxy_corr_column",
         "run_label",
@@ -750,22 +754,234 @@ def boxplot_metric(df, metric, title, higher_is_better=True):
     return fig, ax
 
 
-def build_same_gene_baseline_from_lookup(corr_lookup, baseline_name, corr_threshold):
+# -----------------------------------------------------------------------------
+# Same-gene correlation used for proxy/baseline ELIGIBILITY.
+#
+# LEAKAGE NOTE (important):
+# The precomputed correlation objects shipped in data/ (full_pearson100.joblib,
+# full_spearman100.joblib) are computed over ALL samples, i.e. train + test.
+# Using them to decide which proteins are "eligible" and then scoring those same
+# proteins on `test_samples` selects proteins with knowledge of the test labels,
+# which optimistically biases every downstream "X% of proteins are good" number.
+#
+# Eligibility must therefore be decided from TRAIN samples only. The helpers
+# below recompute the same-gene correlation on `train_samples` and expose it as
+# `same_gene_corr_train`. The full-data value may still be carried for reporting
+# under `same_gene_corr_full_reference_only`, but it must never gate selection.
+# -----------------------------------------------------------------------------
+
+CORR_ELIGIBILITY_COLUMN = "same_gene_corr_train"
+CORR_REPORT_ONLY_COLUMN = "same_gene_corr_full_reference_only"
+MIN_TRAIN_PAIRS_FOR_CORR = 5
+
+
+def _require_global(name):
+    """Fetch a notebook-injected global (X, Y, train_samples, ...) or fail loudly."""
+    if name in globals() and globals()[name] is not None:
+        return globals()[name]
+    raise RuntimeError(
+        f"utils_ccle needs the notebook global {name!r}. "
+        f"Call utils_ccle.set_module_globals(globals()) after defining it."
+    )
+
+
+def _same_name_proteins(X_df=None, Y_df=None):
+    X_df = _require_global("X") if X_df is None else X_df
+    Y_df = _require_global("Y") if Y_df is None else Y_df
+    return sorted(set(Y_df.columns.astype(str)).intersection(set(X_df.columns.astype(str))))
+
+
+def compute_same_gene_corr_lookup(
+    possible_proteins=None,
+    samples=None,
+    *,
+    X_df=None,
+    Y_df=None,
+    method="pearson",
+    min_pairs=None,
+    verbose=True,
+):
+    """Same-gene corr(X[p], Y[p]) computed ONLY on `samples` (default: train_samples).
+
+    This is the leak-free replacement for build_same_name_corr_lookup_fast(), which
+    reads full-data (train+test) correlations.
+
+    Returns
+    -------
+    dict : {protein -> correlation} restricted to `samples`, NaN/short pairs dropped.
+    """
+    X_df = _require_global("X") if X_df is None else X_df
+    Y_df = _require_global("Y") if Y_df is None else Y_df
+    if samples is None:
+        samples = _require_global("train_samples")
+    if possible_proteins is None:
+        possible_proteins = _same_name_proteins(X_df, Y_df)
+    if min_pairs is None:
+        min_pairs = int(globals().get("MIN_TRAIN_PAIRS_FOR_CORR", 5))
+
+    method = str(method).lower().strip()
+    if method not in {"pearson", "spearman", "kendall"}:
+        raise ValueError(f"method must be pearson, spearman or kendall; got {method!r}")
+
+    cols = [str(p) for p in possible_proteins
+            if str(p) in X_df.columns and str(p) in Y_df.columns]
+    if not cols:
+        return {}
+
+    idx = pd.Index(samples)
+    idx = idx.intersection(X_df.index).intersection(Y_df.index)
+    if len(idx) < min_pairs:
+        raise ValueError(
+            f"Only {len(idx)} usable samples for correlation; need >= {min_pairs}. "
+            "Check that `samples` matches the X/Y index."
+        )
+
+    Xs = X_df.loc[idx, cols].apply(pd.to_numeric, errors="coerce")
+    Ys = Y_df.loc[idx, cols].apply(pd.to_numeric, errors="coerce")
+
+    corr = Xs.corrwith(Ys, axis=0, method=method)
+    n_pairs = (Xs.notna() & Ys.notna()).sum(axis=0)
+    corr = corr.where(n_pairs >= int(min_pairs))
+
+    lookup = {str(p): float(v) for p, v in corr.items() if np.isfinite(v)}
+
+    if verbose:
+        print(
+            f"Same-gene {method} lookup computed on {len(idx)} TRAIN samples only "
+            f"(leak-free): {len(lookup)}/{len(cols)} proteins with a usable value."
+        )
+    return lookup
+
+
+def resolve_eligibility_corr_column(df, *, allow_leaky_full_corr=False):
+    """Pick the correlation column that may legitimately gate protein selection.
+
+    Prefers the train-only column. Falls back to the legacy full-data column only
+    when explicitly allowed, since that reintroduces test-label leakage.
+    """
+    if CORR_ELIGIBILITY_COLUMN in df.columns:
+        return CORR_ELIGIBILITY_COLUMN
+
+    legacy = "same_gene_corr_full"
+    if legacy in df.columns:
+        if not allow_leaky_full_corr:
+            raise ValueError(
+                f"Only the legacy {legacy!r} column (full-data, train+test) is present. "
+                "Using it for eligibility leaks test labels into selection. Rebuild the proxy "
+                "table with build_same_gene_proxy_all_from_lookup(corr_scope='train'), or pass "
+                "allow_leaky_full_corr=True to knowingly reproduce the old biased numbers."
+            )
+        print(f"WARNING: falling back to leaky {legacy!r} for eligibility. Results are biased.")
+        return legacy
+
+    raise ValueError(
+        f"No same-gene correlation column found. Expected {CORR_ELIGIBILITY_COLUMN!r}. "
+        f"Available: {list(df.columns)}"
+    )
+
+
+def build_same_name_corr_lookup_train(possible_proteins=None, method="pearson", samples=None, **kwargs):
+    """Convenience alias: train-only same-gene correlation lookup."""
+    return compute_same_gene_corr_lookup(
+        possible_proteins=possible_proteins,
+        samples=samples,
+        method=method,
+        **kwargs,
+    )
+
+
+def _resolve_eligibility_lookup(
+    corr_lookup,
+    corr_scope,
+    corr_method,
+    samples_for_corr,
+    possible,
+    allow_leaky_full_corr,
+    context,
+):
+    """Return (eligibility_lookup, report_lookup, scope_label).
+
+    Default scope is "train": any lookup passed in by legacy notebook code is treated
+    as full-data and demoted to reporting only, so old positional calls silently
+    become leak-free instead of silently staying leaky.
+    """
+    corr_scope = str(corr_scope).lower().strip()
+
+    if corr_scope == "train":
+        eligibility = compute_same_gene_corr_lookup(
+            possible_proteins=possible,
+            samples=samples_for_corr,
+            method=corr_method,
+            verbose=True,
+        )
+        report = dict(corr_lookup) if isinstance(corr_lookup, dict) else {}
+        if report:
+            print(
+                f"{context}: a precomputed full-data lookup was supplied. It is kept for "
+                f"reporting as {CORR_REPORT_ONLY_COLUMN!r} and is NOT used for eligibility."
+            )
+        return eligibility, report, "train_only"
+
+    if corr_scope == "full":
+        if not allow_leaky_full_corr:
+            raise ValueError(
+                f"{context}: corr_scope='full' uses train+test correlations to choose which "
+                "proteins are eligible, then scores them on test_samples. That leaks test "
+                "labels into selection. Use corr_scope='train' (default), or pass "
+                "allow_leaky_full_corr=True to reproduce the old biased numbers on purpose."
+            )
+        if not isinstance(corr_lookup, dict) or not corr_lookup:
+            raise ValueError(f"{context}: corr_scope='full' requires a non-empty corr_lookup.")
+        print(
+            f"WARNING {context}: using FULL-data (train+test) correlations for eligibility. "
+            "Reported shares are optimistically biased and are not a valid generalization estimate."
+        )
+        return dict(corr_lookup), dict(corr_lookup), "full_data_leaky"
+
+    raise ValueError(f"corr_scope must be 'train' or 'full'; got {corr_scope!r}")
+
+
+def build_same_gene_baseline_from_lookup(
+    corr_lookup=None,
+    baseline_name="same_gene_baseline",
+    corr_threshold=0.70,
+    *,
+    corr_scope="train",
+    corr_method="pearson",
+    samples_for_corr=None,
+    allow_leaky_full_corr=False,
+):
     rows = []
 
-    possible = sorted(set(Y.columns.astype(str)).intersection(set(X.columns.astype(str))))
+    X = _require_global("X")
+    Y = _require_global("Y")
+    test_samples = _require_global("test_samples")
+    train_samples = _require_global("train_samples")
+
+    possible = _same_name_proteins(X, Y)
+
+    eligibility_lookup, report_lookup, scope_label = _resolve_eligibility_lookup(
+        corr_lookup,
+        corr_scope,
+        corr_method,
+        samples_for_corr if samples_for_corr is not None else train_samples,
+        possible,
+        allow_leaky_full_corr,
+        context=f"build_same_gene_baseline_from_lookup({baseline_name})",
+    )
 
     candidate_count = 0
     eligible_count = 0
 
     print(f"\nBuilding {baseline_name}")
     print("- Same-name protein/gene pairs possible:", len(possible))
-    print("- Correlation lookup entries:", len(corr_lookup))
+    print("- Eligibility correlation scope:", scope_label, f"({corr_method})")
+    print("- Eligibility lookup entries:", len(eligibility_lookup))
     print("- Test samples used:", len(test_samples))
     print("- Train samples used:", len(train_samples))
 
     for protein in possible:
-        c = corr_lookup.get(protein, np.nan)
+        c = eligibility_lookup.get(protein, np.nan)
 
         if not np.isfinite(c):
             continue
@@ -777,10 +993,12 @@ def build_same_gene_baseline_from_lookup(corr_lookup, baseline_name, corr_thresh
 
         eligible_count += 1
 
+        c_report = report_lookup.get(protein, np.nan)
+
         y_true = Y.loc[test_samples, protein].to_numpy(dtype=float)
         x_test = X.loc[test_samples, protein].to_numpy(dtype=float)
 
-        if SCALE_GENE_BASELINE_WITH_TRAIN_LINEAR_MODEL:
+        if bool(globals().get("SCALE_GENE_BASELINE_WITH_TRAIN_LINEAR_MODEL", False)):
             x_train = X.loc[train_samples, protein].to_numpy(dtype=float)
             y_train = Y.loc[train_samples, protein].to_numpy(dtype=float)
             y_pred = linear_scale_prediction(x_train, y_train, x_test)
@@ -799,7 +1017,10 @@ def build_same_gene_baseline_from_lookup(corr_lookup, baseline_name, corr_thresh
                 "source_folder": baseline_name,
                 "normalization": variant,
                 "h5_path": "",
-                "same_gene_corr_full": float(c),
+                CORR_ELIGIBILITY_COLUMN: float(c),
+                "corr_scope": scope_label,
+                "corr_method": corr_method,
+                CORR_REPORT_ONLY_COLUMN: float(c_report) if np.isfinite(c_report) else np.nan,
                 "test_mse": metrics["test_mse"],
                 "test_pearson_corr": metrics["test_pearson_corr"],
                 "test_cosine_similarity": metrics["test_cosine_similarity"],
@@ -809,8 +1030,10 @@ def build_same_gene_baseline_from_lookup(corr_lookup, baseline_name, corr_thresh
                 "test_n": len(test_samples),
                 "best_params": {
                     "baseline": "same_name_gene_value",
-                    "full_corr_threshold": corr_threshold,
-                    "scaled": SCALE_GENE_BASELINE_WITH_TRAIN_LINEAR_MODEL,
+                    "corr_threshold": corr_threshold,
+                    "corr_scope": scope_label,
+                    "corr_method": corr_method,
+                    "scaled": bool(globals().get("SCALE_GENE_BASELINE_WITH_TRAIN_LINEAR_MODEL", False)),
                     "test_split_source": "read_from_xgb_enet_h5",
                 },
             }
@@ -819,25 +1042,52 @@ def build_same_gene_baseline_from_lookup(corr_lookup, baseline_name, corr_thresh
     return pd.DataFrame(rows), candidate_count, eligible_count
 
 
-def build_same_gene_proxy_all_from_lookup(corr_lookup, proxy_type):
+def build_same_gene_proxy_all_from_lookup(
+    corr_lookup=None,
+    proxy_type="one_gene",
+    *,
+    corr_scope="train",
+    corr_method="pearson",
+    samples_for_corr=None,
+    allow_leaky_full_corr=False,
+):
     rows = []
-    possible = sorted(set(Y.columns.astype(str)).intersection(set(X.columns.astype(str))))
+
+    X = _require_global("X")
+    Y = _require_global("Y")
+    test_samples = _require_global("test_samples")
+    train_samples = _require_global("train_samples")
+
+    possible = _same_name_proteins(X, Y)
+
+    eligibility_lookup, report_lookup, scope_label = _resolve_eligibility_lookup(
+        corr_lookup,
+        corr_scope,
+        corr_method,
+        samples_for_corr if samples_for_corr is not None else train_samples,
+        possible,
+        allow_leaky_full_corr,
+        context=f"build_same_gene_proxy_all_from_lookup({proxy_type})",
+    )
 
     print(f"\nBuilding same-gene {proxy_type} proxy")
     print("- Same-name protein/gene pairs possible:", len(possible))
-    print("- Correlation lookup entries:", len(corr_lookup))
+    print("- Eligibility correlation scope:", scope_label, f"({corr_method})")
+    print("- Eligibility lookup entries:", len(eligibility_lookup))
     print("- Test samples used:", len(test_samples))
     print("- Train samples used:", len(train_samples))
 
     for protein in possible:
-        c = corr_lookup.get(protein, np.nan)
+        c = eligibility_lookup.get(protein, np.nan)
         if not np.isfinite(c):
             continue
+
+        c_report = report_lookup.get(protein, np.nan)
 
         y_true = Y.loc[test_samples, protein].to_numpy(dtype=float)
         x_test = X.loc[test_samples, protein].to_numpy(dtype=float)
 
-        if SCALE_GENE_PROXY_WITH_TRAIN_LINEAR_MODEL:
+        if bool(globals().get("SCALE_GENE_PROXY_WITH_TRAIN_LINEAR_MODEL", False)):
             x_train = X.loc[train_samples, protein].to_numpy(dtype=float)
             y_train = Y.loc[train_samples, protein].to_numpy(dtype=float)
             y_pred = linear_scale_prediction(x_train, y_train, x_test)
@@ -857,7 +1107,10 @@ def build_same_gene_proxy_all_from_lookup(corr_lookup, proxy_type):
             "normalization": variant,
             "h5_path": "",
             "proxy_type": proxy_type,
-            "same_gene_corr_full": float(c),
+            CORR_ELIGIBILITY_COLUMN: float(c),
+            "corr_scope": scope_label,
+            "corr_method": corr_method,
+            CORR_REPORT_ONLY_COLUMN: float(c_report) if np.isfinite(c_report) else np.nan,
             "test_mse": metrics["test_mse"],
             "test_pearson_corr": metrics["test_pearson_corr"],
             "test_cosine_similarity": metrics["test_cosine_similarity"],
@@ -865,11 +1118,13 @@ def build_same_gene_proxy_all_from_lookup(corr_lookup, proxy_type):
             "selected_feature_count": 1,
             "train_n": len(train_samples),
             "test_n": len(test_samples),
-            "split_hash": model_split_hash,
+            "split_hash": globals().get("model_split_hash", None),
             "best_params": {
                 "baseline": "same_name_gene_value",
                 "proxy_type": proxy_type,
-                "scaled": SCALE_GENE_PROXY_WITH_TRAIN_LINEAR_MODEL,
+                "corr_scope": scope_label,
+                "corr_method": corr_method,
+                "scaled": bool(globals().get("SCALE_GENE_PROXY_WITH_TRAIN_LINEAR_MODEL", False)),
                 "test_split_source": "read_from_xgb_enet_h5",
             },
         })
@@ -878,6 +1133,16 @@ def build_same_gene_proxy_all_from_lookup(corr_lookup, proxy_type):
 
 
 def build_same_name_corr_lookup_fast(corr_obj, possible_proteins):
+    """Read same-gene correlations out of a PRECOMPUTED correlation object.
+
+    WARNING - REPORTING ONLY.
+    The shipped objects (full_pearson100.joblib / full_spearman100.joblib) are computed
+    over ALL samples, train + test. Do NOT use the result to decide which proteins are
+    eligible/good: that selects on test labels and biases every downstream share.
+
+    For eligibility use compute_same_gene_corr_lookup() / build_same_name_corr_lookup_train(),
+    which recompute the correlation on train_samples only.
+    """
     possible_proteins = [str(p) for p in possible_proteins]
     possible_set = set(possible_proteins)
     lookup = {}
@@ -2880,6 +3145,7 @@ def proxy_corr_threshold_assignments(proxy_type, pred_thresholds=None, corr_thre
         corr_thresholds = globals().get("PROXY_CORR_THRESHOLDS", [round(x, 2) for x in np.arange(0.00, 0.85, 0.10)])
 
     proxy_df = globals()["proxy_results"][globals()["proxy_results"]["proxy_type"].astype(str).eq(proxy_type)].copy()
+    corr_col = resolve_eligibility_corr_column(proxy_df)
     proxy_idx = _index_by_protein(proxy_df)
     protein_universe_local = globals()["protein_universe"]
     rows = []
@@ -2892,7 +3158,7 @@ def proxy_corr_threshold_assignments(proxy_type, pred_thresholds=None, corr_thre
                 corr_val = np.nan
                 if protein in proxy_idx.index:
                     row = proxy_idx.loc[protein]
-                    corr_val = row.get("same_gene_corr_full", np.nan)
+                    corr_val = row.get(corr_col, np.nan)
                     metric = row.get("test_pearson_corr", np.nan)
                     if np.isfinite(corr_val) and corr_val >= corr_thr:
                         label = "Eligible and good" if np.isfinite(metric) and metric >= pred_thr else "Eligible but not good"
@@ -2904,7 +3170,8 @@ def proxy_corr_threshold_assignments(proxy_type, pred_thresholds=None, corr_thre
                     "stage": label,
                     "protein": protein,
                     "test_pearson_corr": metric,
-                    "same_gene_corr_full": corr_val,
+                    "proxy_corr_column": corr_col,
+                    CORR_ELIGIBILITY_COLUMN: corr_val,
                 })
     return pd.DataFrame(rows)
 
@@ -3050,4 +3317,8 @@ _install_auto_sync()
 __all__ = [
     name for name, obj in globals().items()
     if inspect.isfunction(obj) and getattr(obj, "__module__", None) == __name__
+] + [
+    "CORR_ELIGIBILITY_COLUMN",
+    "CORR_REPORT_ONLY_COLUMN",
+    "MIN_TRAIN_PAIRS_FOR_CORR",
 ]
