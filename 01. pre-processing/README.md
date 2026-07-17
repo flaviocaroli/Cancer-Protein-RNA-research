@@ -12,6 +12,12 @@ This folder contains two notebooks. Run them **in order** (01 → 02).
 - **Outputs:** Final filtered dataset ready for exploration/modeling, plus optional audit tables of kept/dropped rows.
 ---
 
+### 03. normalization_plots.ipynb
+- **What it does:** Generates visualizations for normalized transcriptomics with binning and ranking normalizations.
+- **Outputs:** None.
+---
+
+
 ### Quick start
 1. Install dependencies (from repo root):
    ```bash
@@ -22,8 +28,9 @@ This folder contains two notebooks. Run them **in order** (01 → 02).
 
 ### Expected layout
 ```
-pre-process/
+pre-processing/
 ├─ 01. pre-processing.ipynb
 ├─ 02. filtering_matched.ipynb
+├─ 03. normalization_plots.ipynb
 └─ README.md
 ```
