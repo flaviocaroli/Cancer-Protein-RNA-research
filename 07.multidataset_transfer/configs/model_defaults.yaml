@@ -1,0 +1,33 @@
+preparation:
+  x_normalization: zscore
+  y_normalization: domain_zscore
+  n_bins: 50
+  eps: 1.0e-8
+  domain_balanced_normalizer: true
+  quantile_fit_max_samples_per_domain: 1000
+
+training:
+  feature_k: 5000
+  cv_folds: 5
+  cv_metric: domain_mean_pearson
+  cv_mode: stratified_domain
+  feature_score_mode: domain_rank_mean
+  domain_weighting: balanced
+  random_seed: 42
+  max_param_combos: 10
+
+  enet_grid:
+    alpha: [0.0001, 0.001, 0.01, 0.1, 1.0]
+    l1_ratio: [0.05, 0.2, 0.5, 0.8, 0.95]
+    max_iter: 20000
+    tol: 1.0e-4
+
+  xgb_grid:
+    n_estimators: [200, 500, 800]
+    max_depth: [2, 3]
+    learning_rate: [0.03, 0.07, 0.1]
+    min_child_weight: [1, 5]
+    subsample: [0.8]
+    colsample_bytree: [0.6]
+    reg_lambda: [1.0, 5.0]
+    reg_alpha: [0.0, 0.1]

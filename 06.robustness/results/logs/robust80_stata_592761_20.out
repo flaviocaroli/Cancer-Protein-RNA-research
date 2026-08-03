@@ -1,0 +1,8 @@
+[INFO] Loading transcriptomics: data/transcriptomics_filtered.joblib
+[INFO] Loading proteomics: data/proteomics_matched.joblib
+[INFO] Transposing transcriptomics so rows are samples.
+[INFO] Transposing proteomics so rows are samples.
+[INFO] Aligned data: X=4843 samples x 369 genes; Y=4843 samples x 369 proteins
+[INFO] packed task 20: 2 configs, splits 0:20, proteins 361:369
+[OK] wrote metrics: results/metrics/metrics_shards/task_000020_model=proxy_norm=zscore_k=0.parquet rows=160
+[OK] wrote metrics: results/metrics/metrics_shards/task_000020_model=enet_norm=zscore_k=2000.parquet rows=160

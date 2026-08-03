@@ -1,0 +1,24 @@
+collection_a:
+  TMT:
+    - colon_2019
+    - renal_2019
+    - Endomet_val
+    - breast2020
+    - pedbrain_2020
+    - lung_2020_smoke
+    - lung_val
+    - lung2021
+    - headneck_2021
+    - pancrea2021
+    - brain_2021
+    - liver_val
+  iTRAQ:
+    - breast_2016
+    - ovary_2016
+    - stomach_2019
+  LabelFree:
+    - brain
+    - colon
+    - prostate
+    - liver
+    - lung
