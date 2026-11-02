@@ -9,7 +9,7 @@ LOG_DIR=${LOG_DIR:-$PWD/logs}
 
 # ================= SLURM SETTINGS =================
 PARTITION=${PARTITION:-compute}
-TIME=${TIME:-2-00:00:00}
+TIME=${TIME:-3-00:00:00}
 CPUS_PER_TASK=${CPUS_PER_TASK:-8}
 MEM=${MEM:-32G}
 ARRAY_LIMIT=${ARRAY_LIMIT:-29}
