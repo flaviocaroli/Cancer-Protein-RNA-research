@@ -1,30 +1,34 @@
 # 02. correlations
 
-Protein-level correlation structure (paper, Supplementary workflow stage 2). The `new_corr/` pipeline computes the full matrices, and the three notebooks analyse them.
+Protein-level correlation structure (Supplementary workflow stage 2). Code is in `new_corr/` and the notebooks. **All data lives in one folder: `data/`.**
 
-## Step 1 – compute matrices (`new_corr/`, see its README)
-| Run | Command (from `new_corr/`) | Final file |
+## `data/` (the only data folder)
+| Path | What | Source |
 |---|---|---|
-| Protein × RNA, Pearson, 100 bootstraps | `bash new_run_corr.sh` | `data/results/full_pearson100.joblib` |
-| Protein × RNA, Spearman, 100 bootstraps | `METHOD=spearman bash new_run_corr.sh` | `data/results_spearman/full_spearman100.joblib` |
-| Protein × protein, Pearson | `TARGET=protein bash new_run_corr.sh` | `data/results_prot/full_prot.joblib` |
+| `transcriptomics_filtered.joblib`, `proteomics_matched.joblib` | CCLE matrices | copy from `01. pre-processing/data/` |
+| `protein_list.txt` | 5,113 proteins | in repo |
+| `corr_results/<method>_<target>/per_protein/*.parquet`, `batch_*` | Chunk outputs | `new_corr` |
+| `corr_results/logs/` | SLURM logs | `new_corr/new_run_corr.sh` |
+| `full_pearson100.joblib` | Protein × gene Pearson | `new_corr` assembly |
+| `full_spearman100.joblib` | Protein × gene Spearman (used by 05) | `new_corr` assembly |
+| `full_prot.joblib` | Protein × protein Pearson | `new_corr` assembly |
 
-Each submission runs a SLURM array of chunks plus an automatic assembly job.
-
-## Step 2 – copy into `data/`
-```text
-data/full_pearson100.joblib        <- new_corr/data/results/full_pearson100.joblib
-data/full_prot.joblib              <- new_corr/data/results_prot/full_prot.joblib
-data/transcriptomics_filtered.joblib, data/proteomics_matched.joblib   <- 01 outputs
+## Step 1 – compute the matrices (from `new_corr/`)
+```bash
+bash new_run_corr.sh                     # -> data/full_pearson100.joblib
+METHOD=spearman bash new_run_corr.sh     # -> data/full_spearman100.joblib
+TARGET=protein bash new_run_corr.sh      # -> data/full_prot.joblib
 ```
-`full_spearman100.joblib` is not used here. It goes to `05. ccle_res_analysis/data/`.
+Each submission runs a chunk array plus an automatic assembly job. The assembled matrix is written straight into `data/`, so there is no copy step.
 
-## Step 3 – notebooks (run in order)
-| # | Notebook | Reads | Writes |
+## Step 2 – notebooks (run in order, from this folder)
+| # | Notebook | Reads (`data/`) | Writes |
 |---|---|---|---|
-| 1 | `01. pearson_anlaysis.ipynb` | `data/full_pearson100.joblib`, `data/transcriptomics_filtered.joblib` | `pearson proteins/protein_list_0{5,6,7,8}.txt`, `results/clustermaps/map_pg_std.png`, `results/clusters_pg/*` (protein × gene clusters, communities, network tables) |
-| 2 | `02. prot_clustering.ipynb` | `data/full_prot.joblib`, `data/proteomics_matched.joblib` | `results/clustermaps/map_pp_raw.png`, `map_pe_raw.png`, `results/clusters_pp/*`, `results/clusters_pe/*` |
-| 3 | `03. cluster_anlaysis.ipynb` | `data/full_pearson100.joblib`, `data/transcriptomics_filtered.joblib`, `results/clusters_{pg,pp,pe}/` | `results/overlap_analysis/*` |
+| 1 | `01. pearson_anlaysis.ipynb` | `full_pearson100.joblib`, `transcriptomics_filtered.joblib` | `pearson proteins/protein_list_0{5,6,7,8}.txt`, `results/clusters_pg/*` |
+| 2 | `02. prot_clustering.ipynb` | `full_prot.joblib`, `proteomics_matched.joblib` | `results/clusters_pp/*`, `results/clusters_pe/*` |
+| 3 | `03. cluster_anlaysis.ipynb` | `full_pearson100.joblib`, `transcriptomics_filtered.joblib`, `results/clusters_*` | `results/overlap_analysis/*` |
 
-`results/clusters_pg/protein_clusters_k3.csv` is also used by `03. elasticNet/model_results/01`.
-Helpers: `src/corr_utils.py`.
+`results/clusters_pg/protein_clusters_k3.csv` is copied to `03. elasticNet/data/`.
+
+## Figures
+Every notebook shows its figures inline and saves them to `figures_pdf/<notebook name>/` next to the notebook. The first code cell (*pRNA figure routing*) handles this; keep it.

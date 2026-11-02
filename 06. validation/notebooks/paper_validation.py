@@ -49,8 +49,8 @@ MIN_PAIRS = 3
 
 # Primary CCLE-trained models (paper: z-score, k = 5000, fast grid). Folders are looked up under PROJECT_ROOT.
 MODEL_SPECS = {
-    "ElasticNet": {"directory": "res_enet_zbig", "pattern": "{protein}_enet_8020_zscore_fast_k5000.h5"},
-    "XGBoost": {"directory": "res_xgb_zbig", "pattern": "{protein}_xgb_8020_zscore_fast_k5000.h5"},
+    "ElasticNet": {"directory": "data/res_enet_zbig", "pattern": "{protein}_enet_8020_zscore_fast_k5000.h5"},
+    "XGBoost": {"directory": "data/res_xgb_zbig", "pattern": "{protein}_xgb_8020_zscore_fast_k5000.h5"},
 }
 
 # The 20 external cohorts (Xu et al. 2022; BioStudies S-BSST733). Cohort labels are the upper-case
@@ -254,13 +254,13 @@ def assert_manifest_column(df: pd.DataFrame, manifest_hash: str, label: str = "t
 
 def detect_project_root(start: Optional[Path] = None) -> Path:
     """'06. validation' folder: env PAPER_VALIDATION_PROJECT_ROOT, else the first ancestor of the cwd
-    holding processed_data/ (or data/Collection_A)."""
+    holding data/Collection_A or data/processed."""
     env = os.environ.get("PAPER_VALIDATION_PROJECT_ROOT")
     if env:
         return Path(env).expanduser().resolve()
     start = Path(start or Path.cwd()).resolve()
     for base in [start, *start.parents]:
-        if (base / "processed_data").is_dir() or (base / "data" / "Collection_A").is_dir():
+        if (base / "data" / "Collection_A").is_dir() or (base / "data" / "processed").is_dir():
             return base
     for base in [start, *start.parents]:
         if base.name == "06. validation":
@@ -321,6 +321,8 @@ def load_ccle_matrices(processed_dir) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def load_external_platform(processed_dir, platform: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Notebook-1 output: Collection_A_<platform>_RNA.csv / _Protein.csv (samples x features)."""
     processed_dir = Path(processed_dir)
+    if (processed_dir / "processed").is_dir():          # 06. validation/data/processed (notebook 1)
+        processed_dir = processed_dir / "processed"
     rna = pd.read_csv(processed_dir / f"Collection_A_{platform}_RNA.csv", index_col=0, low_memory=False)
     protein = pd.read_csv(processed_dir / f"Collection_A_{platform}_Protein.csv", index_col=0, low_memory=False)
     rna, protein = _as_float32(rna), _as_float32(protein)

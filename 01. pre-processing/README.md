@@ -22,3 +22,6 @@ Builds the matched CCLE matrices used by every later stage (paper: *CCLE preproc
 3. Copy the outputs into `research_data/01_pre-processing/output/` and into the `data/` folders of the later stages (see their READMEs).
 
 Helper code: `src/standardised_pipeline_utils.py`.
+
+## Figures
+Every notebook shows its figures inline and saves them to `figures_pdf/<notebook name>/` next to the notebook. The first code cell (*pRNA figure routing*) redirects every `savefig` there, keeping the original sub-folders. Do not delete that cell.

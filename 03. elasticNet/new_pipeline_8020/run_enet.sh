@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # ================= BASIC PATHS =================
-DATA_DIR=${DATA_DIR:-$PWD/data}
+DATA_DIR=${DATA_DIR:-$PWD/../data}
 SRC_DIR=${SRC_DIR:-$PWD/src}
-RESULTS_DIR=${RESULTS_DIR:-$PWD/results_enet}
+RESULTS_DIR=${RESULTS_DIR:-$PWD/../data/results_enet}
 LOG_DIR=${LOG_DIR:-$PWD/logs}
 
 # ================= SLURM SETTINGS =================

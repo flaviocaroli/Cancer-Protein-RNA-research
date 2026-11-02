@@ -6,14 +6,14 @@ set -euo pipefail
 
 # Adjust these to your install location on the cluster
 BASE_DIR=${BASE_DIR:-$(pwd)}            # run from new_pipeline_loo/
-DATA_DIR="${BASE_DIR}/data"
+DATA_DIR="${BASE_DIR}/../data"      # single 03. elasticNet/data folder
 SRC_DIR="${BASE_DIR}/src"
 
 PROTEIN_LIST="${DATA_DIR}/protein_list.txt"
 NORMALIZATION_TYPE=${NORMALIZATION_TYPE:-zscore}   # zscore | none | ranking | binning
 RNA_FILE=${RNA_FILE:-transcriptomics_filtered.joblib}
-RESULTS_DIR=${RESULTS_DIR:-${DATA_DIR}/results_${NORMALIZATION_TYPE}}
-LOG_DIR="${DATA_DIR}/logs"
+RESULTS_DIR=${RESULTS_DIR:-${DATA_DIR}/loo/results_${NORMALIZATION_TYPE}}
+LOG_DIR="${DATA_DIR}/loo/logs"
 
 mkdir -p "${RESULTS_DIR}" "${LOG_DIR}"
 

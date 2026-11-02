@@ -135,11 +135,11 @@ def main():
     # ---------------------------
     if args.data_dir is None:
         here = Path(__file__).resolve().parent
-        data_dir = (here.parent / "data").resolve()
+        data_dir = (here.parent.parent / "data").resolve()   # single 03. elasticNet/data folder
     else:
         data_dir = Path(args.data_dir).resolve()
 
-    results_dir = Path(args.results_dir).resolve() if args.results_dir else (data_dir / "results").resolve()
+    results_dir = Path(args.results_dir).resolve() if args.results_dir else (data_dir / "loo" / f"results_{args.normalization}").resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
 
     protein_list_path = args.protein_list or str((data_dir / "protein_list.txt").resolve())

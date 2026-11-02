@@ -5,18 +5,15 @@ set -euo pipefail
 
 # ✅ Capture current directory to avoid Slurm spool errors
 BASE_DIR="$(pwd)"
-DATA_DIR="${BASE_DIR}/data"
+DATA_DIR="${BASE_DIR}/../data"      # single data folder of 02. correlations
 SRC_DIR="${BASE_DIR}"
 
 PROTEIN_LIST="${DATA_DIR}/protein_list.txt"
 METHOD=${METHOD:-pearson}        # pearson | spearman
 TARGET=${TARGET:-rna}            # rna | protein
-case "${METHOD}_${TARGET}" in
-  pearson_rna) SUB=results ;; spearman_rna) SUB=results_spearman ;;
-  pearson_protein) SUB=results_prot ;; *) SUB=results_${METHOD}_${TARGET} ;;
-esac
+SUB=corr_results/${METHOD}_${TARGET}
 RESULTS_DIR=${RESULTS_DIR:-${DATA_DIR}/${SUB}}
-LOG_DIR="${DATA_DIR}/logs"
+LOG_DIR="${DATA_DIR}/corr_results/logs"
 
 # Ensure directories exist before submission
 mkdir -p "${RESULTS_DIR}" "${LOG_DIR}"

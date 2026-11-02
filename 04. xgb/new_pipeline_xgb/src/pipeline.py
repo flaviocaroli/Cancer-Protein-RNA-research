@@ -54,8 +54,8 @@ def parse_args():
 def data_paths():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.abspath(os.path.join(current_dir, ".."))
-    default_data_dir = os.path.join(project_dir, "data")
-    default_results_dir = os.path.join(project_dir, "results_xgb")
+    default_data_dir = os.path.join(project_dir, "..", "data")
+    default_results_dir = os.path.join(project_dir, "..", "data", "results_xgb")
 
     data_dir = os.path.abspath(os.getenv("DATA_DIR", default_data_dir))
     results_dir = os.path.abspath(os.getenv("RESULTS_DIR", default_results_dir))

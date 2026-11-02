@@ -60,8 +60,8 @@ def parse_args():
 def data_paths():
     here = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.abspath(os.path.join(here, ".."))
-    data_dir = os.path.abspath(os.getenv("DATA_DIR", os.path.join(project_dir, "data")))
-    results_dir = os.path.abspath(os.getenv("RESULTS_DIR", os.path.join(project_dir, "results_enet")))
+    data_dir = os.path.abspath(os.getenv("DATA_DIR", os.path.join(project_dir, "..", "data")))
+    results_dir = os.path.abspath(os.getenv("RESULTS_DIR", os.path.join(project_dir, "..", "data", "results_enet")))
     x_path = os.path.join(data_dir, "transcriptomics_filtered.joblib")
     y_path = os.path.join(data_dir, "proteomics_matched.joblib")
     return project_dir, data_dir, results_dir, x_path, y_path

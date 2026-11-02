@@ -15,10 +15,10 @@ from pathlib import Path
 from joblib import dump, load
 from corr_functions import assemble_full_matrix, run_correlation_group
 
-DEFAULT_SUBDIR = {("pearson", "rna"): "results",
-                  ("spearman", "rna"): "results_spearman",
-                  ("pearson", "protein"): "results_prot",
-                  ("spearman", "protein"): "results_prot_spearman"}
+DEFAULT_SUBDIR = {("pearson", "rna"): "corr_results/pearson_rna",
+                  ("spearman", "rna"): "corr_results/spearman_rna",
+                  ("pearson", "protein"): "corr_results/pearson_protein",
+                  ("spearman", "protein"): "corr_results/spearman_protein"}
 
 
 def full_name(method, target, n_boot, bootstrap):
@@ -44,17 +44,17 @@ def main():
     p.add_argument("--no_bootstrap", action="store_true")
     p.add_argument("--n_bootstraps", type=int, default=100)
     p.add_argument("--random_state", type=int, default=42)
-    p.add_argument("--data_dir", type=str, default=None, help="Default: <script_dir>/data")
-    p.add_argument("--results_dir", type=str, default=None, help="Default: <data_dir>/<results|results_spearman|results_prot>")
+    p.add_argument("--data_dir", type=str, default=None, help="Default: ../data (the single 02. correlations/data folder)")
+    p.add_argument("--results_dir", type=str, default=None, help="Default: <data_dir>/corr_results/<method>_<target>")
     p.add_argument("--protein_list", type=str, default=None)
     p.add_argument("--per_protein_format", choices=["parquet", "csv"], default="parquet")
     p.add_argument("--no_batch_file", action="store_true")
     p.add_argument("--assemble", action="store_true", help="Assemble per_protein/* into one joblib and exit.")
-    p.add_argument("--assemble_out", type=str, default=None, help="Output .joblib (default <results_dir>/<full_name>.joblib)")
+    p.add_argument("--assemble_out", type=str, default=None, help="Output .joblib (default <data_dir>/<full_name>.joblib, where the notebooks read it)")
     args = p.parse_args()
 
     here = Path(__file__).resolve().parent
-    data_dir = Path(args.data_dir).resolve() if args.data_dir else (here / "data").resolve()
+    data_dir = Path(args.data_dir).resolve() if args.data_dir else (here.parent / "data").resolve()
     results_dir = (Path(args.results_dir).resolve() if args.results_dir
                    else (data_dir / DEFAULT_SUBDIR[(args.method, args.target)]).resolve())
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,7 @@ def main():
 
     if args.assemble:
         name = full_name(args.method, args.target, args.n_bootstraps, not args.no_bootstrap)
-        out = Path(args.assemble_out) if args.assemble_out else results_dir / f"{name}.joblib"
+        out = Path(args.assemble_out) if args.assemble_out else data_dir / f"{name}.joblib"
         full = assemble_full_matrix(results_dir / "per_protein", protein_order=all_proteins,
                                     square=(args.target == "protein"))
         missing = [x for x in all_proteins if x not in full.index]

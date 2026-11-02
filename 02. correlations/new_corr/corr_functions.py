@@ -215,6 +215,7 @@ def assemble_full_matrix(per_protein_dir: Union[str, Path], protein_order: Optio
     full.columns.name = None
     if square:
         prots = list(full.index)
-        full = full.reindex(columns=prots).fillna(0.0)
-        np.fill_diagonal(full.values, 1.0)
+        arr = full.reindex(columns=prots).fillna(0.0).to_numpy(dtype="float32", copy=True)
+        np.fill_diagonal(arr, 1.0)
+        full = pd.DataFrame(arr, index=pd.Index(prots), columns=pd.Index(prots))
     return full.fillna(0.0)
