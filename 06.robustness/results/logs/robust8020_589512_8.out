@@ -1,8 +1,0 @@
-[INFO] Loading transcriptomics: /home/3159436/06.robustness/data/transcriptomics_filtered.joblib
-[INFO] Loading proteomics: /home/3159436/06.robustness/data/proteomics_matched.joblib
-[INFO] Transposing transcriptomics so rows are samples.
-[INFO] Transposing proteomics so rows are samples.
-[INFO] Aligned data: X=4843 samples x 369 genes; Y=4843 samples x 369 proteins
-[INFO] packed task 8: 2 configs, splits 0:20, proteins 133:152
-[OK] wrote metrics: /home/3159436/06.robustness/results/metrics/metrics_shards/task_000008_model=proxy_norm=zscore_k=0.parquet rows=380
-[OK] wrote metrics: /home/3159436/06.robustness/results/metrics/metrics_shards/task_000008_model=enet_norm=zscore_k=2000.parquet rows=380
