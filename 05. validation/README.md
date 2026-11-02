@@ -1,4 +1,4 @@
-# 06. validation – external transfer to 20 proteogenomic cohorts
+# 05. validation – external transfer to 20 proteogenomic cohorts
 
 Data: the 20 cohorts compiled by Xu et al. 2022 (EMBL-EBI BioStudies **S-BSST733**). There are 12 TMT, 3 iTRAQ and 5 label-free cohorts, 2,560 samples in total.
 

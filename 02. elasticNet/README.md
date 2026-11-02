@@ -1,4 +1,4 @@
-# 03. elasticNet
+# 02. elasticNet
 
 Code is in the subfolders. **All data lives in one folder: `data/`.**
 

@@ -1,4 +1,4 @@
-# 04. xgb
+# 03. xgb
 
 Code is in the subfolders. **All data lives in one folder: `data/`.**
 

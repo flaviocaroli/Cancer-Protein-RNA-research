@@ -1,4 +1,4 @@
-# 05. ccle_res_analysis – CCLE benchmark, cascade and protein classes
+# 04. ccle_res_analysis – CCLE benchmark, cascade and protein classes
 
 Covers Table 1, Figs 2–4 and Figs S2–S5. All models are compared on the same 74 held-out cell lines. The matched benchmark has 4,100 proteins, and the cascade universe has 5,113.
 
