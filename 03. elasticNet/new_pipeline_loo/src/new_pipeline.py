@@ -8,17 +8,61 @@ import os
 import sys
 from pathlib import Path
 
+import json
+
+import numpy as np
+import pandas as pd
 from joblib import load
 
 # Import both standard and normalization runners
-from new_functions import run_protein_group
-from norm_functions import run_protein_group_norm
+from new_functions import best_only_row_for_protein, run_protein_group
+from norm_functions import _best_only_row_from_tracking, _safe_to_parquet_or_csv, run_protein_group_norm
 
 
 def read_protein_list(protein_list_path):
     """Return proteins, ignoring blank lines and comments (#...)."""
     with open(protein_list_path, "r") as f:
         return [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+
+
+def _jsonify_dict_columns(df):
+    """Dict/list columns -> JSON strings so batch files stay compact and CSV/parquet round-trip."""
+    df = df.copy()
+    for col in df.columns:
+        if df[col].map(lambda v: isinstance(v, (dict, list, np.ndarray))).any():
+            df[col] = df[col].map(lambda v: json.dumps(v.tolist() if isinstance(v, np.ndarray) else v)
+                                  if isinstance(v, (dict, list, np.ndarray)) else v)
+    return df
+
+
+def _write_full_output_files(out, X, Y, args, results_dir):
+    """--full_output: write <P>_LOO.parquet (one row per LOO sample) AND the usual <P>_best.parquet,
+    so the same run feeds both 03/model_results (enet_all_results.h5) and 06 validation."""
+    best_rows = []
+    for prot, raw in out.groupby("protein", sort=False):
+        raw = raw.dropna(subset=["LOO sample"]).reset_index(drop=True)
+        if raw.empty:
+            continue
+        loo = _jsonify_dict_columns(raw)
+        loo["normalization"] = args.normalization
+        _safe_to_parquet_or_csv(loo, Path(results_dir) / f"{prot}_LOO.parquet")
+        cols = ["LOO sample", "true", "predicted", "params_dict", "features_coef_dict"]
+        if args.normalization in ("binning", "ranking"):
+            err = raw["true"].astype(float) - raw["predicted"].astype(float)
+            i = int(err.abs().values.argmin())
+            best = _best_only_row_from_tracking(
+                protein_name=prot, sample_ids=raw["LOO sample"].astype(str).to_numpy(), best_i=i,
+                best_abs_error=float(abs(err.iloc[i])), total_sse=float((err ** 2).sum()),
+                best_sq_error=float(err.iloc[i] ** 2), params_dict=dict(raw.loc[i, "params_dict"]),
+                coef_dict=dict(raw.loc[i, "features_coef_dict"]), fit_intercept=bool(args.fit_intercept),
+                output_dir=str(results_dir), normalization="RelativeRepresentation")
+        else:
+            best = best_only_row_for_protein(
+                raw[cols], X, Y[prot], prot, zscore=(args.normalization == "zscore"), zscore_eps=1e-8,
+                fit_intercept=bool(args.fit_intercept), output_dir=str(results_dir))
+        best_rows.append(best)
+    print(f"full_output: wrote {len(best_rows)} *_LOO and *_best files")
+    return out
 
 
 def main():
@@ -75,6 +119,10 @@ def main():
     # Output / Paths
     parser.add_argument("--full_output", action="store_true", help="Save full LOO outputs.")
     parser.add_argument("--data_dir", type=str, default=None)
+    parser.add_argument("--rna_file", type=str, default="transcriptomics_filtered.joblib",
+                        help="RNA matrix inside data_dir. Default transcriptomics_filtered.joblib (same features as "
+                             "the 80/20 and XGB pipelines). Use transcriptomics_common.joblib only to reproduce the "
+                             "common-gene sensitivity run.")
     parser.add_argument("--results_dir", type=str, default=None)
     parser.add_argument("--protein_list", type=str, default=None)
     parser.add_argument("--no_batch_file", action="store_true")
@@ -95,7 +143,7 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     protein_list_path = args.protein_list or str((data_dir / "protein_list.txt").resolve())
-    transcript_path = str((data_dir / "transcriptomics_common.joblib").resolve())
+    transcript_path = str((data_dir / args.rna_file).resolve())
     protein_path = str((data_dir / "proteomics_matched.joblib").resolve())
 
     # Path Validations
@@ -212,6 +260,10 @@ def main():
     # ---------------------------
     # Saving Results
     # ---------------------------
+    if args.full_output and not out.empty and "LOO sample" in out.columns:
+        out = _write_full_output_files(out, X, Y, args, results_dir)
+
+    out = _jsonify_dict_columns(out)
     if not args.no_batch_file and not out.empty:
         # Include normalization in filename for clarity
         batch_name = f"batch_{start_idx}_{end_idx-1}_{args.pipeline}_{args.normalization}.parquet"

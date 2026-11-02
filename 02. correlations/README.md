@@ -1,39 +1,30 @@
-# correlations
+# 02. correlations
 
+Protein-level correlation structure (paper, Supplementary workflow stage 2). The `new_corr/` pipeline computes the full matrices, and the three notebooks analyse them.
 
-## Notebooks
-This folder contains a computation folder and three analysis notebooks. In order to get data to use in notebook please run new_corr/corr_script.py or use the run_corr.sh shell script in an external cluster; smoke_test.ipynb is a controllable test script for small data.
+## Step 1 – compute matrices (`new_corr/`, see its README)
+| Run | Command (from `new_corr/`) | Final file |
+|---|---|---|
+| Protein × RNA, Pearson, 100 bootstraps | `bash new_run_corr.sh` | `data/results/full_pearson100.joblib` |
+| Protein × RNA, Spearman, 100 bootstraps | `METHOD=spearman bash new_run_corr.sh` | `data/results_spearman/full_spearman100.joblib` |
+| Protein × protein, Pearson | `TARGET=protein bash new_run_corr.sh` | `data/results_prot/full_prot.joblib` |
 
-Once full_correlations are computed and saved to disk, the three notebooks can be used to analyze the results.
-Run notebooks **in order** (01 → 02 → 03).  
+Each submission runs a SLURM array of chunks plus an automatic assembly job.
 
-### 01. pearson_anlaysis.ipynb
-- **What it does:** Analyzes pairwise **Pearson correlations** between each protein and each feature, 
-along with basic stats, clustering of the correlation matrix.
-- **Outputs:** Correlation matrix CSV, ranked pairs, clusters and a heatmap.
-
-### 02. cluster_anlaysis.ipynb
-- **What it does:** Analyzes **unsupervised clustering** hierarchical and k-means on the selected feature/correlation space.
-- **Outputs:** Cluster labels, dendrogram or elbow/silhouette diagnostics, and 2D projections PCA for visualization.
-
-### 03. prot_clustering.ipynb
-- **What it does:** **Protein-level clustering** and grouping based on similarity/correlation and includes graph-based views.
-- **Outputs:** Protein clusters/groups as tables, summary plots (heatmaps/network), and export of selected clusters.
----
-
-### Quick start
-1. Install dependencies (from repo root):
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Open each notebook and set input/output paths in the first configuration cell (defaults usually point to a `data/` and `figures/` folder).
-3. Run all cells top-to-bottom.
-
-### Expected layout
+## Step 2 – copy into `data/`
+```text
+data/full_pearson100.joblib        <- new_corr/data/results/full_pearson100.joblib
+data/full_prot.joblib              <- new_corr/data/results_prot/full_prot.joblib
+data/transcriptomics_filtered.joblib, data/proteomics_matched.joblib   <- 01 outputs
 ```
-.
-├─ 01. pearson_anlaysis.ipynb
-├─ 02. prot_clustering.ipynb
-├─ 03. cluster_anlaysis.ipynb
-└─ README.md
-```
+`full_spearman100.joblib` is not used here. It goes to `05. ccle_res_analysis/data/`.
+
+## Step 3 – notebooks (run in order)
+| # | Notebook | Reads | Writes |
+|---|---|---|---|
+| 1 | `01. pearson_anlaysis.ipynb` | `data/full_pearson100.joblib`, `data/transcriptomics_filtered.joblib` | `pearson proteins/protein_list_0{5,6,7,8}.txt`, `results/clustermaps/map_pg_std.png`, `results/clusters_pg/*` (protein × gene clusters, communities, network tables) |
+| 2 | `02. prot_clustering.ipynb` | `data/full_prot.joblib`, `data/proteomics_matched.joblib` | `results/clustermaps/map_pp_raw.png`, `map_pe_raw.png`, `results/clusters_pp/*`, `results/clusters_pe/*` |
+| 3 | `03. cluster_anlaysis.ipynb` | `data/full_pearson100.joblib`, `data/transcriptomics_filtered.joblib`, `results/clusters_{pg,pp,pe}/` | `results/overlap_analysis/*` |
+
+`results/clusters_pg/protein_clusters_k3.csv` is also used by `03. elasticNet/model_results/01`.
+Helpers: `src/corr_utils.py`.

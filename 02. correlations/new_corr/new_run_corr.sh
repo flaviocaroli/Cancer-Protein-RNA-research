@@ -9,7 +9,13 @@ DATA_DIR="${BASE_DIR}/data"
 SRC_DIR="${BASE_DIR}"
 
 PROTEIN_LIST="${DATA_DIR}/protein_list.txt"
-RESULTS_DIR="${DATA_DIR}/results"
+METHOD=${METHOD:-pearson}        # pearson | spearman
+TARGET=${TARGET:-rna}            # rna | protein
+case "${METHOD}_${TARGET}" in
+  pearson_rna) SUB=results ;; spearman_rna) SUB=results_spearman ;;
+  pearson_protein) SUB=results_prot ;; *) SUB=results_${METHOD}_${TARGET} ;;
+esac
+RESULTS_DIR=${RESULTS_DIR:-${DATA_DIR}/${SUB}}
 LOG_DIR="${DATA_DIR}/logs"
 
 # Ensure directories exist before submission
@@ -18,14 +24,14 @@ mkdir -p "${RESULTS_DIR}" "${LOG_DIR}"
 # ---------------------------
 # Strict Chunking Control
 # ---------------------------
-TARGET_CHUNKS=25
+TARGET_CHUNKS=${TARGET_CHUNKS:-25}
 
 # ---------------------------
 # Correlation Knobs
 # ---------------------------
-P_THRESHOLD=0.05
-BOOTSTRAP=1
-N_BOOTSTRAPS=100
+P_THRESHOLD=${P_THRESHOLD:-0.05}
+BOOTSTRAP=${BOOTSTRAP:-1}
+N_BOOTSTRAPS=${N_BOOTSTRAPS:-100}
 PER_PROTEIN_FORMAT="parquet"
 
 # Validate input file
@@ -57,7 +63,7 @@ echo "Submitting array: 0-${LAST_CHUNK} (Total chunks: ${N_CHUNKS})"
 # ---------------------------
 # Submit the Job
 # ---------------------------
-sbatch <<EOF
+JOB_ID=$(sbatch --parsable <<EOF
 #!/bin/bash
 #SBATCH --job-name=corr_chunk
 #SBATCH --nodes=1
@@ -75,7 +81,7 @@ set -euo pipefail
 
 module load miniconda3
 source activate base
-conda activate test_env
+conda activate ${CONDA_ENV:-test_env}
 
 CHUNK_ID=\${SLURM_ARRAY_TASK_ID}
 
@@ -89,6 +95,8 @@ ARGS=(
   --results_dir "${RESULTS_DIR}"
   --protein_list "${PROTEIN_LIST}"
   --per_protein_format "${PER_PROTEIN_FORMAT}"
+  --method "${METHOD}"
+  --target "${TARGET}"
 )
 
 if [ "${BOOTSTRAP}" -eq 0 ]; then
@@ -99,3 +107,12 @@ echo "Running chunk_id=\${CHUNK_ID} in \$(pwd)"
 python corr_pipeline.py "\${ARGS[@]}"
 echo "Done chunk_id=\${CHUNK_ID}"
 EOF
+)
+echo "Submitted array ${JOB_ID}"
+
+# Assemble the full proteins x features matrix once every chunk has finished
+ASSEMBLE_ARGS="--assemble --method ${METHOD} --target ${TARGET} --n_bootstraps ${N_BOOTSTRAPS} --data_dir ${DATA_DIR} --results_dir ${RESULTS_DIR} --protein_list ${PROTEIN_LIST}"
+[ "${BOOTSTRAP}" -eq 0 ] && ASSEMBLE_ARGS="${ASSEMBLE_ARGS} --no_bootstrap"
+sbatch --dependency=afterok:${JOB_ID} --job-name=corr_assemble --partition=defq --mem=64G --time=01:00:00 \
+  --output=${LOG_DIR}/assemble_%j.out --chdir=${SRC_DIR} \
+  --wrap="module load miniconda3; source activate base; conda activate ${CONDA_ENV:-test_env}; python corr_pipeline.py ${ASSEMBLE_ARGS}"

@@ -1,122 +1,44 @@
-# new_pipeline
+# new_pipeline_loo – ElasticNet leave-one-out (robustness, Suppl. S4.2)
 
-## Files
-This folder contains a **script-driven pipeline** (with SLURM support) plus supporting modules in `src/`. The workflow is designed for **chunked execution over many proteins** with flexible feature selection and normalization strategies.
+For each protein and each LOO split, the pipeline uses inner 5-fold CV and ANOVA percentile feature selection on the training samples, then predicts the held-out sample.
 
----
+## Inputs (`data/`)
+| File | Source |
+|---|---|
+| `transcriptomics_filtered.joblib` | 01 output. This is the default `--rna_file`, the same features as the 80/20 and XGB pipelines. |
+| `proteomics_matched.joblib` | 01 output |
+| `protein_list.txt` | **Your local list** (in `research_data/03_elasticNet/input/new_pipeline_loo/data/protein_list.txt`) |
 
-### 01. src/new_pipeline.py (main CLI)
-- **What it does:** Core entry point to run the pipeline on a **group of proteins** (chunked or manual selection).  
-- Supports:
-  - Feature selection pipelines:  
-    `fixed_percentile`, `fixed_p`, `union`, `naive_cluster`
-  - Normalization methods:  
-    `zscore`, `binning`, `ranking`, `none`
-- **Key feature:** Handles **chunking logic** for scalable runs.
-- **Typical outputs:**
-  - Per-protein best results:  
-    `data/results/{PROTEIN}_best.parquet`
-  - Batch results:  
-    `data/results/batch_{start}_{end}_{pipeline}_{normalization}.parquet`
+Optional sensitivity run on genes shared with all external sets: put `transcriptomics_common.joblib` (from `06/notebooks/2`) in `data/` and pass `RNA_FILE=transcriptomics_common.joblib`.
 
----
-
-### 02. src/new_functions.py
-- Implements core pipelines (ElasticNet + LOO + CV).
-- Includes: `fixed_percentile`, `fixed_p`, `union`, `fixed_features`
-- New: `naive_cluster` pipeline
-
----
-
-### 03. src/norm_functions.py
-- Optimized pipelines for:
-  - `binning`
-  - `ranking`
-- Transformation computed once per run (faster).
-
----
-
-### 04. new_run_enet.sh
-- SLURM array launcher for parallel execution.
-- Handles chunking, logging, and environment setup.
-
----
-
-### 05. new_smoke.ipynb
-- Optional notebook for quick testing/debugging.
-
----
-
-## Quick start
-
-### Install
+## Run (from this folder) – one submission per normalization
 ```bash
-pip install -r requirements.txt
+for N in zscore none ranking binning; do NORMALIZATION_TYPE=$N bash new_run_enet.sh; done
 ```
+| Variable | Default | Meaning |
+|---|---|---|
+| `NORMALIZATION_TYPE` | zscore | zscore, none, ranking or binning |
+| `RESULTS_DIR` | `data/results_<norm>` | One folder per normalization, so runs no longer overwrite each other |
+| `FULL_OUTPUT` | 1 | Also write per-sample `<P>_LOO.parquet`. Needed for `model_results/00`. |
+| `RNA_FILE` | transcriptomics_filtered.joblib | RNA matrix in `data/` |
+| `PIPELINE_TYPE`, `PERCENTILE`, `N_BINS`, `TARGET_CHUNKS`, `CONDA_ENV`, `BASE_DIR` | fixed_percentile, 10, 50, 10, test_env, current folder | |
 
-### Run locally
-```bash
-python src/new_pipeline.py --group_size 50 --pipeline fixed_percentile --normalization zscore
-```
+Local: `python src/new_pipeline.py --normalization zscore --full_output --group_size 50 --results_dir data/results_zscore`
 
-### Run with chunking
-```bash
-python src/new_pipeline.py --chunk_id 0 --target_chunks 10 --pipeline fixed_percentile --normalization zscore
-```
+## Outputs (`data/results_<norm>/`)
+| File | Content | Used by |
+|---|---|---|
+| `<P>_best.parquet` | Best LOO split: coefficients (`feat_coeffs_dict`), params, `mse_all_others`, and z-score parameters for the z-score run | `06/notebooks` 3, 4, 5 |
+| `<P>_LOO.parquet` | One row per LOO sample: `protein`, `LOO sample`, `true`, `predicted`, `params_dict`, `features_coef_dict` | `model_results/00_build_enet_all_results` |
+| `batch_<s>_<e>_fixed_percentile_<norm>.parquet` | Chunk summary (dict columns stored as JSON) | `06/notebooks/3` |
 
-### Run on SLURM
-```bash
-bash new_run_enet.sh
-```
+Where the folders go next:
 
----
+| Folder | Copy to | Also used by |
+|---|---|---|
+| `results_zscore` | `06. validation/results_val/` | `model_results/00` |
+| `results_none` | `06. validation/results_none/` | |
+| `results_ranking` | `06. validation/results_rk/` | |
+| `results_binning` | `06. validation/results_bin/` | |
 
-## Expected layout
-```
-pipeline_proteins_v2/
-├─ src/
-│  ├─ new_pipeline.py
-│  ├─ new_functions.py
-│  ├─ norm_functions.py
-├─ data/
-│  ├─ transcriptomics_common.joblib
-│  ├─ proteomics_matched.joblib
-│  ├─ protein_list.txt
-│  ├─ results/
-│  └─ logs/
-├─ new_run_enet.sh
-├─ new_smoke.ipynb
-├─ requirements.txt
-└─ README.md
-```
-
----
-
-## Pipelines
-- fixed_percentile
-- fixed_p
-- union
-- naive_cluster
-
----
-
-## Normalization
-- zscore
-- binning
-- ranking
-- none
-
----
-
-## Outputs
-- `data/results/{PROTEIN}_best.parquet`
-- `data/results/batch_*.parquet`
-- logs in `data/logs/`
-
----
-
-## Notes
-- Model: ElasticNet
-- Outer CV: Leave-One-Out
-- Inner CV: KFold
-- Seeds fixed for reproducibility
+`new_smoke.ipynb` runs 2 proteins in-process and through the CLI, writing to `data/results_smoke/`.

@@ -5,12 +5,14 @@
 set -euo pipefail
 
 # Adjust these to your install location on the cluster
-BASE_DIR=~/new_pipeline
+BASE_DIR=${BASE_DIR:-$(pwd)}            # run from new_pipeline_loo/
 DATA_DIR="${BASE_DIR}/data"
 SRC_DIR="${BASE_DIR}/src"
 
 PROTEIN_LIST="${DATA_DIR}/protein_list.txt"
-RESULTS_DIR="${DATA_DIR}/results"
+NORMALIZATION_TYPE=${NORMALIZATION_TYPE:-zscore}   # zscore | none | ranking | binning
+RNA_FILE=${RNA_FILE:-transcriptomics_filtered.joblib}
+RESULTS_DIR=${RESULTS_DIR:-${DATA_DIR}/results_${NORMALIZATION_TYPE}}
 LOG_DIR="${DATA_DIR}/logs"
 
 mkdir -p "${RESULTS_DIR}" "${LOG_DIR}"
@@ -18,14 +20,14 @@ mkdir -p "${RESULTS_DIR}" "${LOG_DIR}"
 # ---------------------------
 # Dynamic chunking controls
 # ---------------------------
-TARGET_CHUNKS=10
+TARGET_CHUNKS=${TARGET_CHUNKS:-10}
 # GROUP_SIZE_OVERRIDE=511
 
 # ---------------------------
 # 1. Feature Selection Strategy (PIPELINE)
 # ---------------------------
 # Choices: fixed_percentile | fixed_p | union | naive_cluster
-PIPELINE_TYPE="fixed_percentile"
+PIPELINE_TYPE=${PIPELINE_TYPE:-fixed_percentile}
 
 # ---------------------------
 # 2. Normalization Method
@@ -33,18 +35,18 @@ PIPELINE_TYPE="fixed_percentile"
 # Choices: zscore | binning | ranking | none
 # Use "zscore" for the standard pipeline.
 # Use "binning" or "ranking" for Relative Representations (Stahlschmidt et al.).
-NORMALIZATION_TYPE="binning"
+
 
 # ---------------------------
 # 3. Hyperparameters
 # ---------------------------
-PERCENTILE=10
+PERCENTILE=${PERCENTILE:-10}
 P_VALUE=0.05
 N_SPLITS=5
-N_BINS=50     # Only used if NORMALIZATION_TYPE is "binning"
+N_BINS=${N_BINS:-50}     # Only used if NORMALIZATION_TYPE is "binning"
 
 # Default is best-only. Set FULL_OUTPUT=1 to add --full_output.
-FULL_OUTPUT=0
+FULL_OUTPUT=${FULL_OUTPUT:-1}   # 1 = also write <P>_LOO.parquet (needed for enet_all_results.h5)
 
 if [ ! -f "${PROTEIN_LIST}" ]; then
   echo "Error: protein_list.txt not found at ${PROTEIN_LIST}"
@@ -88,7 +90,7 @@ set -euo pipefail
 
 module load miniconda3
 source activate base
-conda activate test_env
+conda activate ${CONDA_ENV:-test_env}
 
 cd "${SRC_DIR}"
 mkdir -p "${RESULTS_DIR}"
@@ -106,6 +108,7 @@ ARGS=(
   --n_splits "${N_SPLITS}"
   --n_bins "${N_BINS}"
   --data_dir "${DATA_DIR}"
+  --rna_file "${RNA_FILE}"
   --results_dir "${RESULTS_DIR}"
   --protein_list "${PROTEIN_LIST}"
 )

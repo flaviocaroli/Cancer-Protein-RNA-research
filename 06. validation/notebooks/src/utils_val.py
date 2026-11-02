@@ -146,14 +146,27 @@ def ensure_directory(path):
     return path
 
 
-def load_best_result_tables(results_dir):
-    """Load all *_best.csv files from a validation-model result directory."""
+def _read_result_table(path):
+    path = Path(path)
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+
+
+def _result_files(results_dir, pattern):
+    """Files matching <pattern>.parquet or <pattern>.csv; parquet wins when both exist for the same stem."""
     results_dir = Path(results_dir)
-    files = sorted(results_dir.glob("*_best.csv"))
+    found = {}
+    for suffix in (".csv", ".parquet"):
+        for path in sorted(results_dir.glob(pattern + suffix)):
+            found[path.stem] = path
+    return [found[k] for k in sorted(found)]
+
+
+def _load_result_tables(results_dir, pattern):
+    files = _result_files(results_dir, pattern)
     rows = []
     for path in files:
         try:
-            df = pd.read_csv(path)
+            df = _read_result_table(path)
             df["source_file"] = path.name
             rows.append(df)
         except Exception as exc:
@@ -164,26 +177,16 @@ def load_best_result_tables(results_dir):
     if "protein" in out.columns:
         out = out.sort_values("protein").reset_index(drop=True)
     return out, files
+
+
+def load_best_result_tables(results_dir):
+    """Load all per-protein best models (<P>_best.parquet or <P>_best.csv) from a LOO result directory."""
+    return _load_result_tables(results_dir, "*_best")
 
 
 def load_batch_result_tables(results_dir):
-    """Load concatenated batch result files from a validation-model result directory."""
-    results_dir = Path(results_dir)
-    files = sorted(results_dir.glob("*batch*.csv"))
-    rows = []
-    for path in files:
-        try:
-            df = pd.read_csv(path)
-            df["source_file"] = path.name
-            rows.append(df)
-        except Exception as exc:
-            print(f"Could not read {path}: {type(exc).__name__}: {exc}")
-    if not rows:
-        return pd.DataFrame(), files
-    out = pd.concat(rows, ignore_index=True)
-    if "protein" in out.columns:
-        out = out.sort_values("protein").reset_index(drop=True)
-    return out, files
+    """Load all batch files (batch_*.parquet or batch_*.csv) from a LOO result directory."""
+    return _load_result_tables(results_dir, "*batch*")
 
 
 def compare_model_result_tables(best_df, batch_df):
@@ -260,15 +263,23 @@ def percent_zeros_by_tissue(rna_df, tissue_func=None):
 
 
 def parse_coefficients(value):
+    """Coefficient dict from a dict (parquet), a JSON string or a python-literal string (csv)."""
     if isinstance(value, dict):
-        return value
-    if pd.isna(value):
+        parsed = value
+    elif value is None or (isinstance(value, float) and np.isnan(value)):
         return {}
-    try:
-        parsed = ast.literal_eval(str(value))
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+    else:
+        text = str(value)
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return {}
+    if not isinstance(parsed, dict):
         return {}
+    return {str(k): float(v) for k, v in parsed.items() if v is not None and np.isfinite(float(v))}
 
 
 def feature_coverage_for_models(model_df, rna_columns, n_preview=10):
