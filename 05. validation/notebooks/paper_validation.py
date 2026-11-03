@@ -346,12 +346,25 @@ def read_h5_split(path) -> Tuple[List[str], List[str]]:
         return _decode_list(h5[f"{group}/train_samples"]), _decode_list(h5[f"{group}/test_samples"])
 
 
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    """Load artifacts pickled with NumPy 2.x (numpy._core.*) in NumPy 1.x environments, and vice versa."""
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (ModuleNotFoundError, AttributeError):
+            if module.startswith("numpy._core"):
+                return super().find_class("numpy.core" + module[len("numpy._core"):], name)
+            if module.startswith("numpy.core"):
+                return super().find_class("numpy._core" + module[len("numpy.core"):], name)
+            raise
+
+
 def load_h5_artifact(path) -> Dict[str, Any]:
     """Model artifact (dict with model, normalizer, selected_features, ...) from either 80/20 H5 format."""
-    import h5py
+    import h5py, io
     with h5py.File(path, "r") as h5:
         payload = np.asarray(h5["model/artifact_pickle_xz"][:], dtype=np.uint8)
-    artifact = pickle.loads(lzma.decompress(payload.tobytes()))
+    artifact = _NumpyCompatUnpickler(io.BytesIO(lzma.decompress(payload.tobytes()))).load()
     artifact.setdefault("normalizer", {"method": "none", "columns": list(map(str, artifact["selected_features"]))})
     return artifact
 
