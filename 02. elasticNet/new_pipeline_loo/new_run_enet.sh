@@ -6,7 +6,7 @@ set -euo pipefail
 
 # Adjust these to your install location on the cluster
 BASE_DIR=${BASE_DIR:-$(pwd)}            # run from new_pipeline_loo/
-DATA_DIR="${BASE_DIR}/../data"      # single 03. elasticNet/data folder
+DATA_DIR="${BASE_DIR}/../data"      # single 02. elasticNet/data folder
 SRC_DIR="${BASE_DIR}/src"
 
 PROTEIN_LIST="${DATA_DIR}/protein_list.txt"

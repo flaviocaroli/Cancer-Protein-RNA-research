@@ -12,9 +12,9 @@ Builds the matched CCLE matrices used by every later stage (paper: *CCLE preproc
 ## Key outputs (used downstream)
 | File | Shape | Used by |
 |---|---|---|
-| `transcriptomics_filtered.joblib` | 369 samples × 22,614 genes | 02, 03, 04, 05, 06 |
-| `proteomics_matched.joblib` | 369 samples × 5,113 proteins | 02, 03, 04, 05, 06 |
-| `correlations.joblib` | proteins × {pearson, spearman, kendall} | `03/model_results/01`, `04/model_results/02` |
+| `transcriptomics_filtered.joblib` | 369 samples × 22,614 genes | 02, 03, 04, 05 |
+| `proteomics_matched.joblib` | 369 samples × 5,113 proteins | 02, 03, 04, 05 |
+| `correlations.joblib` | proteins × {pearson, spearman, kendall} | `02. elasticNet/model_results/01`, `03. xgb/model_results/02` |
 
 ## How to run
 1. Copy `research_data/01_pre-processing/input/data/*` into `data/`, or let the notebook download the files.

@@ -3,13 +3,15 @@
 Covers Table 1, Figs 2–4 and Figs S2–S5. All models are compared on the same 74 held-out cell lines. The matched benchmark has 4,100 proteins, and the cascade universe has 5,113.
 
 ## `data/` (the only data folder)
+
+> Every entry of `data/` (and every output folder listed below) is a **link** into `research_data/`, created by `link_research_data.py` at the repo root. "Copy from X" in the table means the link points to the dataset stored once under X; nothing is duplicated.
+
 | Path | What | Source |
 |---|---|---|
 | `transcriptomics_filtered.joblib`, `proteomics_matched.joblib` | CCLE matrices | copy from 01 |
-| `full_pearson100.joblib`, `full_spearman100.joblib` | Correlation matrices | copy from `02. correlations/data/` |
-| `results_enet/`, `res_enet_zbig/` | ENet 80/20 H5 | copy from `03. elasticNet/data/` |
-| `results_xgb/`, `res_xgb_zbig/` | XGB 80/20 H5 (not LOO) | copy from `04. xgb/data/` |
-| `sc_predictions_{2M,160K,10K}.npz` | Optional | copy from `03. elasticNet/data/` |
+| `results_enet/`, `res_enet_zbig/` | ENet 80/20 H5 | copy from `02. elasticNet/data/` |
+| `results_xgb/`, `res_xgb_zbig/` | XGB 80/20 H5 (not LOO) | copy from `03. xgb/data/` |
+| `sc_predictions_{2M,160K,10K}.npz` | Optional | copy from `02. elasticNet/data/` |
 | `pan_atlas_downloads/` | HPA, UniProt, GO, Reactome (downloaded by `5_hpa_pan_atlas` Part A); `wikipathways_human.gmt` is in the repo | — |
 
 Analysis outputs (tables) are written to their own folders next to the notebooks, as listed below.
@@ -30,8 +32,8 @@ Analysis outputs (tables) are written to their own folders next to the notebooks
 Parts B and C use the paper's primary proxy mode (`procedural_unified_tables/train_linear/…`) automatically. If that file is missing, they fall back to auto-search.
 
 ## Notes
-- Proxy eligibility must use training samples only. `4_ccle_cascade` does this (`same_gene_corr_train`). `2. enet_xgb_plots` and `0_proxies` still read the all-sample `full_*100` lookups. Treat their proxy subsets as descriptive (see `src/utils_ccle.py`, LEAKAGE NOTE).
-- The output descriptions in `cascade_partition_outputs_metadata.md` still hold. `procedural_ccle.ipynb` is now `4_ccle_cascade.ipynb`, and `9.procedural_cptac.ipynb` is now `06/notebooks/9_external_cascade.ipynb`.
+- Same-gene correlations are computed on the 295 training samples inside notebooks 0, 2 and 4 (`same_gene_corr_train`). The precomputed `full_pearson100` / `full_spearman100` matrices are no longer needed.
+- The output descriptions in `cascade_partition_outputs_metadata.md` still hold. `procedural_ccle.ipynb` is now `4_ccle_cascade.ipynb`, and `9.procedural_cptac.ipynb` is now `05. validation/notebooks/9_external_cascade.ipynb`.
 
 ## Figures
 Every notebook shows its figures inline and saves them to `figures_pdf/<notebook name>/` next to the notebook. The first code cell (*pRNA figure routing*) redirects every `savefig` there, keeping the original sub-folders. Do not delete that cell.

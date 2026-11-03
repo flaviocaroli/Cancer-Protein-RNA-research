@@ -11,4 +11,4 @@ NORMALIZATIONS=zscore SELECT_K=5000 GRID_PRESET=fast MAX_PARAM_COMBOS=8 SPLITS=3
 RESULTS_DIR=$PWD/../data/res_xgb_zbig PARTITION=compute TIME=2-00:00:00 bash run_xgboost.sh   # -> ../data/res_xgb_zbig/
 ```
 Defaults: `DATA_DIR=../data`, `RESULTS_DIR=../data/results_xgb`, `PARTITION=medium_cpu`, `TIME=3:00:00`, `USE_GPU=0`.
-Outputs: `<P>_xgb_8020_<norm>_fast_k2000.h5` and `<P>_xgb_8020_zscore_fast_k5000.h5`. Copy them to `05. ccle_res_analysis/data/` and `06. validation/data/`.
+Outputs: `<P>_xgb_8020_<norm>_fast_k2000.h5` and `<P>_xgb_8020_zscore_fast_k5000.h5`. Copy them to `04. ccle_res_analysis/data/` and `05. validation/data/`.

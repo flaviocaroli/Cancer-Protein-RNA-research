@@ -1,4 +1,4 @@
-# 06. validation / notebooks
+# 05. validation / notebooks
 
 Run from this folder. Paths are relative (`../data`, `../processed_data`, `../val_data`, `../results_*`). Shared helpers are in `src/utils_val.py`.
 
@@ -15,7 +15,7 @@ Run from this folder. Paths are relative (`../data`, `../processed_data`, `../va
 | 4 | `4.results_norms_loo.ipynb` | `../data/loo/results_{zscore,none,ranking,binning}/*_best.*` | tables in `../data/loo/results_zscore/plots_norms_unified/` |
 | 5 | `5. comparison_models_loo.ipynb` | same four folders | `figures_pdf/5. comparison_models_loo/…/model_comparison_bars.png` |
 
-`../data/loo/` is a copy of `03. elasticNet/data/loo/`. Parquet and CSV are both read.
+`../data/loo/` is a copy of `02. elasticNet/data/loo/`. Parquet and CSV are both read.
 
 ## Paper external validation (Figs 5–7, S6–S9)
 Primary analysis, as in the paper's Methods and S5:

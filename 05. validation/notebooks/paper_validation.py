@@ -253,7 +253,7 @@ def assert_manifest_column(df: pd.DataFrame, manifest_hash: str, label: str = "t
 # =============================================================================
 
 def detect_project_root(start: Optional[Path] = None) -> Path:
-    """'06. validation' folder: env PAPER_VALIDATION_PROJECT_ROOT, else the first ancestor of the cwd
+    """'05. validation' folder: env PAPER_VALIDATION_PROJECT_ROOT, else the first ancestor of the cwd
     holding data/Collection_A or data/processed."""
     env = os.environ.get("PAPER_VALIDATION_PROJECT_ROOT")
     if env:
@@ -263,7 +263,7 @@ def detect_project_root(start: Optional[Path] = None) -> Path:
         if (base / "data" / "Collection_A").is_dir() or (base / "data" / "processed").is_dir():
             return base
     for base in [start, *start.parents]:
-        if base.name == "06. validation":
+        if base.name == "05. validation":
             return base
     return start.parent if start.name == "notebooks" else start
 
@@ -321,7 +321,7 @@ def load_ccle_matrices(processed_dir) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def load_external_platform(processed_dir, platform: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Notebook-1 output: Collection_A_<platform>_RNA.csv / _Protein.csv (samples x features)."""
     processed_dir = Path(processed_dir)
-    if (processed_dir / "processed").is_dir():          # 06. validation/data/processed (notebook 1)
+    if (processed_dir / "processed").is_dir():          # 05. validation/data/processed (notebook 1)
         processed_dir = processed_dir / "processed"
     rna = pd.read_csv(processed_dir / f"Collection_A_{platform}_RNA.csv", index_col=0, low_memory=False)
     protein = pd.read_csv(processed_dir / f"Collection_A_{platform}_Protein.csv", index_col=0, low_memory=False)

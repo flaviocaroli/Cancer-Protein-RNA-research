@@ -6,7 +6,7 @@ Zero-shot scTranslator 2M / 160K / 10K predictions on the TMT, iTRAQ and label-f
 1. Copy `research_data/00_external/input/scTranslator/` to `<repo>/external/scTranslator/`:
    - `external/scTranslator/scTranslator/` – the scTranslator repo (old path `C:\Users\avsd8\OneDrive\Desktop\thesis\scTranslator stuff\scTranslator`)
    - `external/scTranslator/checkpoints/scTranslator_{2M,160K,10K}.pt` (old folder `…\scTranslator stuff\`)
-2. Run `06. validation/notebooks/2. comparison.ipynb` first. The benchmarks read `06. validation/data/val_data/` directly.
+2. Run `05. validation/notebooks/2. comparison.ipynb` first. The benchmarks read `05. validation/data/val_data/` directly.
 3. Optional overrides: `SCTRANSLATOR_REPO`, `SCTRANSLATOR_CKPT_DIR`, `VAL_DATA_DIR`. `pip install torch`; a GPU is recommended.
 
 ## Notebooks and outputs

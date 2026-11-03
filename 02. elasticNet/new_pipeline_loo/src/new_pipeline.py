@@ -135,7 +135,7 @@ def main():
     # ---------------------------
     if args.data_dir is None:
         here = Path(__file__).resolve().parent
-        data_dir = (here.parent.parent / "data").resolve()   # single 03. elasticNet/data folder
+        data_dir = (here.parent.parent / "data").resolve()   # single 02. elasticNet/data folder
     else:
         data_dir = Path(args.data_dir).resolve()
 

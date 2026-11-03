@@ -1,7 +1,7 @@
 # new_pipeline_8020 – ElasticNet, fixed 80/20 split (primary)
 
 Per protein: 80/20 split (295/74), transformation fitted on the training data, F-regression top-k features, 3-fold CV over at most 8 random `fast`-grid combinations (MSE), refit on 295 samples, test on 74 (Suppl. S1.1).
-Reads and writes **`../data/`** (the single `03. elasticNet/data` folder).
+Reads and writes **`../data/`** (the single `02. elasticNet/data` folder).
 
 ## Runs used in the paper (from this folder)
 ```bash
@@ -18,5 +18,5 @@ Defaults: `DATA_DIR=../data`, `RESULTS_DIR=../data/results_enet`, logs in `./log
 ../data/results_enet/<P>_enet_8020_{none,zscore,ranking}_fast_k2000.h5, <P>_enet_8020_binning50_fast_k2000.h5
 ../data/res_enet_zbig/<P>_enet_8020_zscore_fast_k5000.h5
 ```
-Each H5 holds the split, test metrics, best params, selected features and the final model artifact. These folders are copied to `05. ccle_res_analysis/data/` and `06. validation/data/`.
+Each H5 holds the split, test metrics, best params, selected features and the final model artifact. These folders are copied to `04. ccle_res_analysis/data/` and `05. validation/data/`.
 `enet_8020_smoke_test.ipynb` runs the same code in-process on a few proteins.

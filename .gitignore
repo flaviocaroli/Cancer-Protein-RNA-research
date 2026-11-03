@@ -19,3 +19,33 @@
 *.zip
 *.svg
 *.pdf
+# Windows folder metadata
+desktop.ini
+
+# ---- research_data links (created by link_research_data.py; the data lives in research_data/) ----
+/01. pre-processing/data
+/02. elasticNet/data
+/03. xgb/data
+/04. ccle_res_analysis/data
+/05. validation/data
+/external/scTranslator
+/02. elasticNet/model_results/exports
+/02. elasticNet/model_results/comparison_plots
+/02. elasticNet/model_results/outputs
+/03. xgb/model_results/exports
+/04. ccle_res_analysis/model_performance_test_plots_all_proxies
+/04. ccle_res_analysis/comparison_outputs
+/04. ccle_res_analysis/output
+/04. ccle_res_analysis/detailed_metric_plots
+/04. ccle_res_analysis/complete_comparison_outputs
+/04. ccle_res_analysis/procedural_unified_tables
+/04. ccle_res_analysis/6_pan_atlas_outputs
+/04. ccle_res_analysis/4.2_HPA_heatmaps_outputs
+/04. ccle_res_analysis/4.0_hpa_v4_outputs
+/05. validation/results_external_validation_paper_v1
+/05. validation/scTranslator-validation-newdata/benchmark_results_tmt
+/05. validation/scTranslator-validation-newdata/benchmark_results_itraq
+/05. validation/scTranslator-validation-newdata/benchmark_results_labelfree
+/05. validation/scTranslator-validation-newdata/overlap/benchmark_results_OVERLAP_tmt
+/05. validation/scTranslator-validation-newdata/overlap/benchmark_results_OVERLAP_itraq
+/05. validation/scTranslator-validation-newdata/overlap/benchmark_results_OVERLAP_labelfree
